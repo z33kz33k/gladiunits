@@ -14,7 +14,7 @@
 from functools import wraps
 from typing import Any, Iterable, Type
 
-from bookscrape.constants import Method, Function
+from gladiunits.constants import Method, Function
 
 
 def fullqualname(class_: Type) -> str:
