@@ -7,7 +7,7 @@ import lxml
 from lxml.etree import XMLSyntaxError, _Element as Element
 
 from gladiunits.constants import PathLike
-from gladiunits.data import Origin, TextsMixin, CATEGORIES, FACTIONS
+from gladiunits.data import Origin, Parameter, TextsMixin, CATEGORIES, FACTIONS, Effect
 
 
 class FileParser:
@@ -86,7 +86,7 @@ class _EntryLine:
 
     @staticmethod
     def is_valid(line: str) -> bool:
-        return not any(token not in line for token in ("<entry", "name=", "value=", "/>"))
+        return all(token in line for token in ("<entry", "name=", "value=", "/>"))
 
 
 class _CoreFileParser(FileParser):
@@ -154,6 +154,8 @@ DISPLAYED_TEXTS = _parse_displayed_texts()
 
 
 class XmlParser(FileParser):
+    ROOT_TAG = None
+
     @property
     def root(self) -> Element:
         return self._root
@@ -210,6 +212,7 @@ class XmlParser(FileParser):
                             raise
             else:
                 raise
+        self._validate_root_tag()
 
     @staticmethod
     def _sanitize_line(line: str) -> str:  # GPT4
@@ -220,8 +223,24 @@ class XmlParser(FileParser):
         # use re.sub with a function as replacer
         return re.sub(r"(?<=value=\")<.*>(?=\")", replace_brackets, line)
 
-    def gather_tags(self) -> List[str]:
-        return sorted({el.tag for el in self.root.iter()})
+    def collect_tags(self, root: Element | None = None) -> List[str]:
+        root = self.root if root is None else root
+        return sorted({el.tag for el in root.iter(Element)})
+
+    def collect_attrs(self, root: Element | None = None) -> List[str]:
+        root = self.root if root is None else root
+        children_attrs = {attr for el in root.iter(Element) for attr in el.attrib}
+        return sorted({*root.attrib, *children_attrs})
+
+    def immediate_tags(self, root: Element | None = None) -> List[str]:
+        root = self.root if root is None else root
+        immediate_tags = [el.tag for el in root]
+        return sorted(t for t in immediate_tags if isinstance(t, str))
+
+    def immediate_attrs(self, root: Element | None = None) -> List[str]:
+        root = self.root if root is None else root
+        immediate_attrs = {*root.attrib}
+        return sorted(t for t in immediate_attrs if isinstance(t, str))
 
     def _get_texts(self) -> TextsMixin:
         path = self._origin.category_path
@@ -230,27 +249,40 @@ class XmlParser(FileParser):
         flavor = DISPLAYED_TEXTS.get(f"{str(path)}Flavor")
         return TextsMixin(name, flavor, desc)
 
+    def _validate_root_tag(self) -> None:
+        if self.ROOT_TAG and self.root.tag != self.ROOT_TAG:
+            raise ValueError(f"Invalid root tag: {self.root.tag!r}")
 
-class UpgradeParser(XmlParser):
-    """Parser of 'Upgrades' .xml files.
 
-    'strategyModifiers' tag those contain are used by the game AI and as such are not of interest
-    in this project.
-    """
-    @property
-    def tier(self) -> int:
-        return self._tier
-
+class _ReferenceXmlParser(XmlParser):
     @property
     def reference(self) -> Path | None:
         return self._reference
 
     @property
-    def reffed_category(self) -> str | None:
+    def reffed_category(self) -> str | None:  # TODO: remove (duplicated in Upgrade)
         if not self.reference:
             return None
         origin = Origin(self.reference)
         return origin.category
+
+    def __init__(self, file: PathLike) -> None:
+        super().__init__(file)
+        self._reference = self.root.attrib.get("icon")
+        self._reference = Path(self._reference) if self._reference else None
+
+
+class UpgradeParser(_ReferenceXmlParser):
+    """Parser of 'Upgrades' .xml files.
+
+    'strategyModifiers' tag and its content is used by the game AI and as such is not of
+    interest for this project.
+    """
+    ROOT_TAG = "upgrade"
+
+    @property
+    def tier(self) -> int:
+        return self._tier
 
     @property
     def required_upgrades(self) -> List[Path]:
@@ -261,18 +293,270 @@ class UpgradeParser(XmlParser):
         if (self.file.parent.name not in FACTIONS
                 or self.file.parent.parent.name != "Upgrades"):
             raise ValueError(f"Invalid input file: {self.file}")
-        if self.root.tag != "upgrade":
-            raise ValueError(f"Invalid root tag: {self.root.tag!r}")
         self._tier = self.root.attrib.get("position")
         self._tier = int(self._tier) if self._tier else 0
-        self._reference = self.root.attrib.get("icon")
-        self._reference = Path(self._reference) if self._reference else None
         self._required_upgrades = [Path(self.origin.category) / el.attrib["name"] for el
                                    in self.root.findall("requiredUpgrades/upgrade")]
 
 
 def parse_upgrades() -> List[UpgradeParser]:
     # required correcting a malformed original file:
-    # xml/World/Upgrades/Tau/RipykaVa.xml to work (doubly defined 'icon' attribute)
+    # xml/World/Upgrades/Tau/RipykaVa.xml (doubly defined 'icon' attribute)
     rootdir = Path(r"xml/World/Upgrades")
     return [UpgradeParser(f) for p in rootdir.iterdir() if p.is_dir() for f in p.iterdir()]
+
+
+class TraitParser(_ReferenceXmlParser):
+    """Parser of 'Traits' .xml files.
+
+    <modifiers> or those that end with such ending contain (multiple in theory but usually only
+    one) <modifier> tags. All those that end differently (except <areas> and <targetConditions>)
+    do so only to specify <area> for <modifiers> contained.
+    <modifier> contains <effects> that in turn enumerates self-named tags i.e <addTrait> that
+    specify (multiple in theory, but usually only one) effects.
+    Effects can be conditional. This gets specified within <conditions> tag in self-named tags
+    i.e. <encounter>. Those tags, contrary to effects, can get pretty complicated.
+
+    Selected example:
+    "Strikedown"
+    <trait alwaysVisible="1" category="Buff">
+        <onCombatOpponentModifiers>
+            <modifier>
+                <conditions>
+                    <encounter>
+                        <self>
+                            <attacking/>
+                        </self>
+                        <opponent>
+                            <noAttacking/>
+                            <noTrait name="Fortification"/>
+                            <noTrait name="MonstrousCreature"/>
+                            <noTrait name="Vehicle"/>
+                        </opponent>
+                    </encounter>
+                </conditions>
+                <effects>
+                    <addTrait name="Slowed" duration="1"/>
+                </effects>
+            </modifier>
+        </onCombatOpponentModifiers>
+    </trait>
+
+    "Pinned"
+    <trait category="Debuff">
+        <modifiers>
+            <modifier>
+                <conditions>
+                    <unit>
+                        <noTrait name="Bike"/>
+                        <noTrait name="Fearless"/>
+                        <noTrait name="Fortification"/>
+                        <noTrait name="Jetbike"/>
+                        <noTrait name="Eldar/KhaineAwakened"/>
+                        <noTrait name="MonstrousCreature"/>
+                        <noTrait name="Tyranids/SynapseLink"/>
+                        <noTrait name="Vehicle"/>
+                        <noTrait name="Zealot"/>
+                    </unit>
+                </conditions>
+                <effects>
+                    <movementMax mul="-0.67"/>
+                    <rangedAccuracy mul="-0.17"/>
+                    <rangedDamageReduction add="0.17"/>
+                </effects>
+            </modifier>
+            <modifier visible="0">
+                <conditions>
+                    <unit>
+                        <noTrait name="Bike"/>
+                        <noTrait name="Fearless"/>
+                        <noTrait name="Fortification"/>
+                        <noTrait name="Jetbike"/>
+                        <noTrait name="Eldar/KhaineAwakened"/>
+                        <noTrait name="MonstrousCreature"/>
+                        <noTrait name="Tyranids/SynapseLink"/>
+                        <noTrait name="Vehicle"/>
+                        <noTrait name="Zealot"/>
+                    </unit>
+                </conditions>
+                <effects>
+                    <preventOverwatch add="1"/>
+                </effects>
+            </modifier>
+        </modifiers>
+    </trait>
+    """
+    ROOT_TAG = "trait"
+    IMMEDIATE_TAGS = [
+        'areas',
+        'modifiers',
+        'onCombatOpponentModifiers',
+        'onCombatSelfModifiers',
+        'onEnemyKilledOpponentTileModifiers',
+        'onEnemyKilledSelf',
+        'onEnemyKilledSelfModifiers',
+        'onTileEnteredModifiers',
+        'onTraitAddedModifiers',
+        'onTraitRemovedModifiers',
+        'onTransportDisembarked',
+        'onTransportEmbarked',
+        'onUnitDisappeared',
+        'onUnitDisappearedModifiers',
+        'onUnitDisembarked',
+        'opponentModifiers',
+        'perTurnModifiers',
+        'targetConditions'
+    ]
+    EFFECTS = [
+        'accuracy',
+        'actionPointsMax',
+        'addFeature',
+        'addRandomBoonOfChaos',
+        'addTrait',
+        'addUnit',
+        'additionalMembersHit',
+        'armor',
+        'armorPenetration',
+        'attacks',
+        'attacksTaken',
+        'biomassUpkeep',
+        'boonOfChaosChance',
+        'cargoSlotsRequired',
+        'circumstanceMeleeDamage',
+        'cityDamageReduction',
+        'cityRadius',
+        'consumedMovement',
+        'damage',
+        'damageFromHitpoints',
+        'damageReturnFactor',
+        'damageSelfFactor',
+        'damageTaken',
+        'deathExperience',
+        'deathMorale',
+        'duplicateTypeCost',
+        'energy',
+        'energyFromAdjacentBuildings',
+        'energyFromExperienceValueFactor',
+        'energyUpkeep',
+        'feelNoPainDamageReduction',
+        'flatResourcesFromFeatures',
+        'food',
+        'foodFromAdjacentBuildings',
+        'foodUpkeep',
+        'growth',
+        'healingRate',
+        'heroDamageReduction',
+        'hitpoints',
+        'hitpointsFactorFromMax',
+        'hitpointsMax',
+        'ignoreLineOfSight',
+        'ignoreZoneOfControl',
+        'influence',
+        'influenceFromAdjacentBuildings',
+        'influencePerCombatFromUpkeepFactor',
+        'influencePerExperience',
+        'influencePerKillValue',
+        'influenceUpkeep',
+        'invulnerableDamageReduction',
+        'lifeStealFactor',
+        'lifeStealRadius',
+        'loyalty',
+        'loyaltyFromAdjacentBuildings',
+        'loyaltyFromUtopiaType',
+        'loyaltyPerCity',
+        'meleeAccuracy',
+        'meleeArmorPenetration',
+        'meleeAttacks',
+        'meleeDamage',
+        'meleeDamageReduction',
+        'meleeOverwatch',
+        'minDamageFromHitpointsFraction',
+        'monolithicBuildingsBonus',
+        'monolithicBuildingsPenalty',
+        'morale',
+        'moraleLossFactor',
+        'moraleLossFactorPerAllyInArea',
+        'moraleMax',
+        'moraleRegeneration',
+        'movement',
+        'movementCost',
+        'movementMax',
+        'opponentRangedAccuracy',
+        'ore',
+        'oreFromAdjacentBuildings',
+        'orePerKillValue',
+        'oreUpkeep',
+        'populationLimit',
+        'preventEnemyOverwatch',
+        'preventOverwatch',
+        'processUse',
+        'production',
+        'productionFromAdjacentBuildings',
+        'rangeMax',
+        'rangedAccuracy',
+        'rangedArmorPenetration',
+        'rangedAttacks',
+        'rangedDamageReduction',
+        'rangedDamageReductionBypass',
+        'rangedInvulnerableDamageReduction',
+        'removeFeature',
+        'removeTrait',
+        'removeUnit',
+        'requisitions',
+        'requisitionsUpkeep',
+        'research',
+        'researchCost',
+        'researchFromAdjacentBuildings',
+        'researchPerExperience',
+        'researchPerKillValue',
+        'sight',
+        'supportSystemSlots',
+        'typeLimit',
+        'weaponDamage',
+        'witchfireDamageReduction'
+    ]
+    CONDITIONS = [
+        'building',
+        'encounter',
+        'encounterRange',
+        'player',
+        'supportingFire',
+        'tile',
+        'unit',
+        'weapon'
+    ]
+
+    @property
+    def sub_category(self) -> str | None:
+        return self._sub_category
+
+    @property
+    def effects(self) -> List[Effect]:
+        return self._effects
+
+    def __init__(self, file: PathLike) -> None:
+        super().__init__(file)
+        if (self.file.parent.name != "Traits"
+                and self.file.parent.parent.name != "Traits"):
+            raise ValueError(f"Invalid input file: {self.file}")
+        self._sub_category = self.root.attrib.get("category")
+        self._effects = [
+            Effect(
+                sub_el.tag, tuple(Parameter(attr, sub_el.attrib[attr]) for attr in sub_el.attrib))
+            for el in self.root.findall(".//effects") for sub_el in el
+        ]
+
+
+def parse_traits() -> List[TraitParser]:
+    # required correcting a malformed original file:
+    # xml/World/Traits/ChaosSpaceMarines/RunesOfTheBloodGod.xml (missing whitespace)
+    rootdir = Path(r"xml/World/Traits")
+    flat = [f for f in rootdir.iterdir() if f.is_file()]
+    nested = [f for p in rootdir.iterdir() if p.is_dir() for f in p.iterdir()]
+    traits = []
+    for f in [*flat, *nested]:
+        try:
+            traits.append(TraitParser(f))
+        except XMLSyntaxError:
+            pass
+    return traits

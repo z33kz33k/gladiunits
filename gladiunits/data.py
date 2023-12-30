@@ -1,3 +1,5 @@
+from collections import namedtuple
+from enum import StrEnum
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Tuple
@@ -35,10 +37,6 @@ class Origin:
     path: Path
 
     @property
-    def name(self) -> str:
-        return self.path.stem
-
-    @property
     def category(self) -> str:
         parent = self.path.parent
         if parent.name in FACTIONS:
@@ -59,7 +57,11 @@ class Origin:
     @property
     def category_path(self) -> Path:
         idx = self.path.parts.index(self.category)
-        return Path(*self.path.parts[idx:-1], self.name)
+        return Path(*self.path.parts[idx:-1], self.path.stem)
+
+    @property
+    def name(self) -> str:
+        return str(Path(*self.category_path.parts[1:]))
 
     def __post_init__(self) -> None:
         if self.category not in CATEGORIES:
@@ -72,12 +74,66 @@ class TextsMixin:
     description: str | None
     flavor: str | None
 
+    @property
+    def properties(self) -> tuple:
+        return self.name, self.description, self.flavor
+
+    @staticmethod
+    def from_other(other: "TextsMixin") -> "TextsMixin":
+        return TextsMixin(*other.properties)
+
+
+Parameter = namedtuple("Parameter", "name value")
+
+
+@dataclass(frozen=True)
+class Effect:
+    name: str
+    params: Tuple[Parameter, ...]
+
+
+@dataclass(frozen=True)
+class Condition:
+    pass  # TODO
+
+
+class ModifierType(StrEnum):
+    REGULAR = 'modifiers'
+    ON_COMBAT_OPPONENT = 'onCombatOpponentModifiers'
+    ON_COMBAT_SELF = 'onCombatSelfModifiers'
+    ON_ENEMY_KILLED_OPPONENT_TILE = 'onEnemyKilledOpponentTileModifiers'
+    ON_ENEMY_KILLED_SELF = 'onEnemyKilledSelfModifiers'
+    ON_TILE_ENTERED = 'onTileEnteredModifiers'
+    ON_TRAIT_ADDED = 'onTraitAddedModifiers'
+    ON_TRAIT_REMOVED = 'onTraitRemovedModifiers'
+    ON_TRANSPORT_DISEMBARKED = 'onTransportDisembarked'
+    ON_TRANSPORT_EMBARKED = 'onTransportEmbarked'
+    ON_UNIT_DISAPPEARED = 'onUnitDisappearedModifiers'
+    ON_UNIT_DISEMBARKED = 'onUnitDisembarked'
+    OPPONENT = 'opponentModifiers'
+    PER_TURN = 'perTurnModifiers'
+
+
+@dataclass(frozen=True)
+class Modifier:
+    type: ModifierType
+    conditions: Tuple[Condition, ...]
+    effects: Tuple[Effect, ...]
+
+
+@dataclass(frozen=True)
+class AreaModifier(Modifier):
+    pass  # TODO:
+
 
 @dataclass(frozen=True)
 class Trait(TextsMixin, Origin):
-    required_upgrade: str | None
+    sub_category: str | None  # Buff, Debuff etc.
+    reference: Path | None
+    modifiers: Tuple[Modifier | AreaModifier]
 
     def __post_init__(self) -> None:
+        super().__post_init__()
         if self.category != "Traits":
             raise ValueError(f"Not a path to a trait .xml: {self.path}")
 
@@ -93,6 +149,7 @@ class Weapon(TextsMixin, Origin):
     traits: Tuple[Trait, ...]
 
     def __post_init__(self) -> None:
+        super().__post_init__()
         if self.category != "Weapons":
             raise ValueError(f"Not a path to a weapon .xml: {self.path}")
 
@@ -100,14 +157,18 @@ class Weapon(TextsMixin, Origin):
 @dataclass(frozen=True)
 class Upgrade(TextsMixin, Origin):
     tier: int
-    reference: Origin
+    reference: Path | None
     required_upgrades: Tuple["Upgrade", ...]
 
     @property
-    def ref_category(self) -> str:
-        return self.reference.category
+    def reffed_category(self) -> str | None:
+        if not self.reference:
+            return None
+        origin = Origin(self.reference)
+        return origin.category
 
     def __post_init__(self) -> None:
+        super().__post_init__()
         if self.category != "Upgrades":
             raise ValueError(f"Not a path to an upgrade .xml: {self.path}")
         if self.tier not in range(11):
@@ -117,14 +178,12 @@ class Upgrade(TextsMixin, Origin):
 
 
 @dataclass(frozen=True)
-class Action(TextsMixin, Origin):
+class Action:
     weapon: Weapon | None
     cooldown: int | None
     required_upgrade: Upgrade | None
 
-    def __post__init__(self) -> None:
-        if self.category != "Units":
-            raise ValueError(f"Not a path to an unit .xml: {self.path}")
+    def __post_init__(self) -> None:
         if self.cooldown and self.cooldown < 0:
             raise ValueError("Cooldown must not be negative")
 
@@ -151,8 +210,7 @@ class Unit(TextsMixin, Origin):
     def total_hitpoints(self) -> float:
         return self.hitpoints * self.group_size
 
-    def __post__init__(self) -> None:
+    def __post_init__(self) -> None:
+        super().__post_init__()
         if self.category != "Units":
             raise ValueError(f"Not a path to an unit .xml: {self.path}")
-
-
