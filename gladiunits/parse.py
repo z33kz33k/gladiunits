@@ -7,7 +7,7 @@ import lxml
 from lxml.etree import XMLSyntaxError, _Element as Element
 
 from gladiunits.constants import PathLike
-from gladiunits.data import Origin, CATEGORIES
+from gladiunits.data import Origin, TextsMixin, CATEGORIES, FACTIONS
 
 
 class FileParser:
@@ -27,50 +27,6 @@ class FileParser:
             raise FileNotFoundError(f"Not a file: '{self.file}'")
 
 
-class XmlParser(FileParser):
-    @property
-    def root(self) -> Element:
-        return self._root
-
-    def __init__(self, file: PathLike) -> None:
-        super().__init__(file)
-        try:
-            self._root: Element = lxml.etree.parse(self.file).getroot()
-        except XMLSyntaxError as e:
-            if "Unescaped '<' not allowed" in str(e):
-                with self.file.open(encoding="utf8") as f:
-                    lines = [self.sanitize_line(line) for line in f][1:]
-
-                    # sanitize_line() won't handle nested XML inside attributes
-                    lines = [line for line in lines if '="<' not in line]  # ignore those
-                    try:
-                        self._root = lxml.etree.fromstring("".join(lines))
-                    except XMLSyntaxError as e:
-                        if "Unescaped '<' not allowed" in str(e):
-                            truly_sanitized = []
-                            for line in lines:
-                                try:
-                                    if "<" in line and "/>" in line:
-                                        lxml.etree.fromstring(line)
-                                    truly_sanitized.append(line)
-                                except XMLSyntaxError:
-                                    pass
-                            self._root = lxml.etree.fromstring("".join(truly_sanitized))
-                        else:
-                            raise
-            else:
-                raise
-
-    @staticmethod
-    def sanitize_line(line: str) -> str:  # GPT4
-        # define a function to replace < and > with { and } respectively
-        def replace_brackets(match):
-            return match.group().replace('<', '{').replace('>', '}')
-
-        # use re.sub with a function as replacer
-        return re.sub(r"(?<=value=\")<.*>(?=\")", replace_brackets, line)
-
-
 class _EntryLine:
     PATTERN_TEMPLATE = r'{}=\"(.*)\"'
 
@@ -83,16 +39,15 @@ class _EntryLine:
         return self._category
 
     @property
-    def name_origin(self) -> Origin:
-        path = Path(self.category) / self.name
-        return Origin(path)
+    def name_path(self) -> Path:
+        return Path(self.category) / self.name
 
     @property
     def value(self) -> str:
         return self._value
 
     @property
-    def ref(self) -> Origin | None:
+    def ref(self) -> Path | None:
         return self._ref
 
     def __init__(self, line: str, category: str) -> None:
@@ -103,12 +58,12 @@ class _EntryLine:
         self._name = self._parse_name()
         self._value = self._parse(self._line, "value")
         if self.value.startswith("<string name="):
-            self._ref = Origin(Path(self._parse(self.value, "name", double_quotes=False)))
+            self._ref = Path(self._parse(self.value, "name", double_quotes=False))
 
     def __repr__(self) -> str:
-        text = f"{self.__class__.__name__}(origin='{self.name_origin.path}'"
+        text = f"{self.__class__.__name__}(origin='{self.name_path}'"
         if self.ref:
-            text += f", ref='{self.ref.path}')"
+            text += f", ref='{self.ref}')"
         else:
             text += f", value='{self.value}')"
         return text
@@ -152,8 +107,8 @@ class _CoreFileParser(FileParser):
         return [line for line in self.entry_lines if line.ref]
 
     @property
-    def refs(self) -> List[Origin]:
-        return sorted({el.ref for el in self.reffed_lines}, key=lambda r: str(r.path))
+    def refs(self) -> List[Path]:
+        return sorted({el.ref for el in self.reffed_lines}, key=lambda r: str(r))
 
     def __init__(self, file: PathLike) -> None:
         super().__init__(file)
@@ -165,7 +120,7 @@ class _CoreFileParser(FileParser):
                 self._entry_lines.append(_EntryLine(line, self.category))
 
 
-def _parse_displayed_texts() -> Dict[Origin, str]:
+def _parse_displayed_texts() -> Dict[str, str]:
     files = (
         r"xml/Core/Languages/English/Actions.xml",
         r"xml/Core/Languages/English/Buildings.xml",
@@ -179,16 +134,16 @@ def _parse_displayed_texts() -> Dict[Origin, str]:
     parsers = [_CoreFileParser(file) for file in files]
     parsers.sort(key=lambda p: len(p.reffed_lines))
 
-    context = {entry_line.name_origin: entry_line.value for parser in parsers
+    context = {str(entry_line.name_path): entry_line.value for parser in parsers
                for entry_line in parser.plain_lines}
 
     stack = [entry_line for parser in parsers for entry_line in parser.reffed_lines][::-1]
     stack = deque(stack)
     while stack:
         line = stack.pop()
-        found = context.get(line.ref)
+        found = context.get(str(line.ref))
         if found:
-            context.update({line.name_origin: found})
+            context.update({str(line.name_path): found})
         else:
             stack.appendleft(line)
 
@@ -196,3 +151,128 @@ def _parse_displayed_texts() -> Dict[Origin, str]:
 
 
 DISPLAYED_TEXTS = _parse_displayed_texts()
+
+
+class XmlParser(FileParser):
+    @property
+    def root(self) -> Element:
+        return self._root
+
+    @property
+    def origin(self) -> Origin:
+        return self._origin
+
+    @property
+    def category(self) -> str:
+        return self.origin.category
+
+    @property
+    def faction(self) -> str | None:
+        return self.origin.faction
+
+    @property
+    def texts(self) -> TextsMixin:
+        return self._texts
+
+    @property
+    def name(self):
+        return self.texts.name
+
+    def __init__(self, file: PathLike) -> None:
+        super().__init__(file)
+        self._origin = Origin(self.file)
+        self._texts = self._get_texts()
+        if self.file.suffix.lower() != ".xml":
+            raise ValueError(f"Not a XML file: '{self.file}'")
+        try:
+            self._root: Element = lxml.etree.parse(self.file).getroot()
+        except XMLSyntaxError as e:
+            if "Unescaped '<' not allowed" in str(e):
+                with self.file.open(encoding="utf8") as f:
+                    lines = [self._sanitize_line(line) for line in f][1:]
+
+                    # sanitize_line() won't handle nested XML inside attributes
+                    lines = [line for line in lines if '="<' not in line]  # ignore those
+                    try:
+                        self._root = lxml.etree.fromstring("".join(lines))
+                    except XMLSyntaxError as e:
+                        if "Unescaped '<' not allowed" in str(e):
+                            truly_sanitized = []
+                            for line in lines:
+                                try:
+                                    if "<" in line and "/>" in line:
+                                        lxml.etree.fromstring(line)
+                                    truly_sanitized.append(line)
+                                except XMLSyntaxError:
+                                    pass
+                            self._root = lxml.etree.fromstring("".join(truly_sanitized))
+                        else:
+                            raise
+            else:
+                raise
+
+    @staticmethod
+    def _sanitize_line(line: str) -> str:  # GPT4
+        # define a function to replace < and > with { and } respectively
+        def replace_brackets(match):
+            return match.group().replace('<', '{').replace('>', '}')
+
+        # use re.sub with a function as replacer
+        return re.sub(r"(?<=value=\")<.*>(?=\")", replace_brackets, line)
+
+    def gather_tags(self) -> List[str]:
+        return sorted({el.tag for el in self.root.iter()})
+
+    def _get_texts(self) -> TextsMixin:
+        path = self._origin.category_path
+        name = DISPLAYED_TEXTS[str(path)]
+        desc = DISPLAYED_TEXTS.get(f"{str(path)}Description")
+        flavor = DISPLAYED_TEXTS.get(f"{str(path)}Flavor")
+        return TextsMixin(name, flavor, desc)
+
+
+class UpgradeParser(XmlParser):
+    """Parser of 'Upgrades' .xml files.
+
+    'strategyModifiers' tag those contain are used by the game AI and as such are not of interest
+    in this project.
+    """
+    @property
+    def tier(self) -> int:
+        return self._tier
+
+    @property
+    def reference(self) -> Path | None:
+        return self._reference
+
+    @property
+    def reffed_category(self) -> str | None:
+        if not self.reference:
+            return None
+        origin = Origin(self.reference)
+        return origin.category
+
+    @property
+    def required_upgrades(self) -> List[Path]:
+        return self._required_upgrades
+
+    def __init__(self, file: PathLike) -> None:
+        super().__init__(file)
+        if (self.file.parent.name not in FACTIONS
+                or self.file.parent.parent.name != "Upgrades"):
+            raise ValueError(f"Invalid input file: {self.file}")
+        if self.root.tag != "upgrade":
+            raise ValueError(f"Invalid root tag: {self.root.tag!r}")
+        self._tier = self.root.attrib.get("position")
+        self._tier = int(self._tier) if self._tier else 0
+        self._reference = self.root.attrib.get("icon")
+        self._reference = Path(self._reference) if self._reference else None
+        self._required_upgrades = [Path(self.origin.category) / el.attrib["name"] for el
+                                   in self.root.findall("requiredUpgrades/upgrade")]
+
+
+def parse_upgrades() -> List[UpgradeParser]:
+    # required correcting a malformed original file:
+    # xml/World/Upgrades/Tau/RipykaVa.xml to work (doubly defined 'icon' attribute)
+    rootdir = Path(r"xml/World/Upgrades")
+    return [UpgradeParser(f) for p in rootdir.iterdir() if p.is_dir() for f in p.iterdir()]

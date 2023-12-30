@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Tuple
 
+from gladiunits.utils import from_iterable
 
 CATEGORIES = [
     'Actions',
@@ -52,9 +53,13 @@ class Origin:
         return category
 
     @property
+    def faction(self) -> str | None:
+        return from_iterable(self.path.parts, lambda p: p in FACTIONS)
+
+    @property
     def category_path(self) -> Path:
         idx = self.path.parts.index(self.category)
-        return Path(*self.path.parts[idx:])
+        return Path(*self.path.parts[idx:-1], self.name)
 
     def __post_init__(self) -> None:
         if self.category not in CATEGORIES:
@@ -62,7 +67,14 @@ class Origin:
 
 
 @dataclass(frozen=True)
-class Trait(Origin):
+class TextsMixin:
+    name: str
+    description: str | None
+    flavor: str | None
+
+
+@dataclass(frozen=True)
+class Trait(TextsMixin, Origin):
     required_upgrade: str | None
 
     def __post_init__(self) -> None:
@@ -71,7 +83,7 @@ class Trait(Origin):
 
 
 @dataclass(frozen=True)
-class Weapon(Origin):
+class Weapon(TextsMixin, Origin):
     attacks: int | None
     melee_armor_penetration: int | None
     melee_damage: float | None
@@ -86,7 +98,7 @@ class Weapon(Origin):
 
 
 @dataclass(frozen=True)
-class Upgrade(Origin):
+class Upgrade(TextsMixin, Origin):
     tier: int
     reference: Origin
     required_upgrades: Tuple["Upgrade", ...]
@@ -105,7 +117,7 @@ class Upgrade(Origin):
 
 
 @dataclass(frozen=True)
-class Action(Origin):
+class Action(TextsMixin, Origin):
     weapon: Weapon | None
     cooldown: int | None
     required_upgrade: Upgrade | None
@@ -118,7 +130,7 @@ class Action(Origin):
 
 
 @dataclass(frozen=True)
-class Unit(Origin):
+class Unit(TextsMixin, Origin):
     armor: int
     hitpoints: float
     movement: int
