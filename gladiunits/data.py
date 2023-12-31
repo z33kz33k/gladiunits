@@ -1,8 +1,7 @@
-from collections import namedtuple
 from enum import Enum
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Tuple
+from typing import List, Literal, Tuple, ClassVar, Type
 
 from gladiunits.utils import from_iterable
 
@@ -83,7 +82,32 @@ class TextsMixin:
         return TextsMixin(*other.properties)
 
 
-Parameter = namedtuple("Parameter", "name value")
+@dataclass(frozen=True)
+class Parameter:
+    TYPES: ClassVar[Tuple[Tuple[str, Type], ...]] = (
+        ('action', str),
+        ('add', float),
+        ('addMax', float),
+        ('addMin', float),
+        ('count', int),
+        ('duration', float),
+        ('equal', float),
+        ('greater', float),
+        ('less', float),
+        ('match', str),
+        ('max', float),
+        ('min', float),
+        ('minMax', float),
+        ('minMin', float),
+        ('mul', float),
+        ('mulMax', float),
+        ('mulMin', float),
+        ('name', str),
+        ('range', float),
+        ('weapon', str),
+    )
+    name: str
+    value: str
 
 
 @dataclass(frozen=True)
@@ -91,6 +115,10 @@ class Effect:
     name: str
     params: Tuple[Parameter, ...]
     sub_effects: Tuple["Effect", ...]
+
+    @property
+    def all_params(self) -> List[Parameter]:
+        return [*self.params, *[p for e in self.sub_effects for p in e.all_params]]
 
 
 class ModifierType(Enum):
@@ -126,6 +154,10 @@ class Modifier:
     type: ModifierType
     conditions: Tuple[Effect, ...]
     effects: Tuple[Effect, ...]
+
+    @property
+    def all_params(self) -> List[Parameter]:
+        return [p for e in [*self.conditions, *self.effects] for p in e.all_params]
 
 
 @dataclass(frozen=True)
