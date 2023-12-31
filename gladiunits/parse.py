@@ -1,13 +1,14 @@
 import re
 from collections import deque
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 import lxml
 from lxml.etree import XMLSyntaxError, _Element as Element
 
 from gladiunits.constants import PathLike
-from gladiunits.data import Origin, Parameter, TextsMixin, CATEGORIES, FACTIONS, Effect
+from gladiunits.data import Area, AreaModifier, Modifier, Origin, Parameter, TextsMixin, CATEGORIES, \
+    FACTIONS, Effect, ModifierType
 
 
 class FileParser:
@@ -186,8 +187,9 @@ class XmlParser(FileParser):
         self._texts = self._get_texts()
         if self.file.suffix.lower() != ".xml":
             raise ValueError(f"Not a XML file: '{self.file}'")
+        parser = lxml.etree.XMLParser(remove_comments=True)
         try:
-            self._root: Element = lxml.etree.parse(self.file).getroot()
+            self._root: Element = lxml.etree.parse(self.file, parser).getroot()
         except XMLSyntaxError as e:
             if "Unescaped '<' not allowed" in str(e):
                 with self.file.open(encoding="utf8") as f:
@@ -207,7 +209,7 @@ class XmlParser(FileParser):
                                     truly_sanitized.append(line)
                                 except XMLSyntaxError:
                                     pass
-                            self._root = lxml.etree.fromstring("".join(truly_sanitized))
+                            self._root = lxml.etree.fromstring("".join(truly_sanitized), parser)
                         else:
                             raise
             else:
@@ -229,17 +231,16 @@ class XmlParser(FileParser):
 
     def collect_attrs(self, root: Element | None = None) -> List[str]:
         root = self.root if root is None else root
-        children_attrs = {attr for el in root.iter(Element) for attr in el.attrib}
-        return sorted({*root.attrib, *children_attrs})
+        return sorted({attr for el in root.iter(Element) for attr in el.attrib})
 
-    def immediate_tags(self, root: Element | None = None) -> List[str]:
+    def get_immediate_tags(self, root: Element | None = None) -> List[str]:
         root = self.root if root is None else root
         immediate_tags = [el.tag for el in root]
         return sorted(t for t in immediate_tags if isinstance(t, str))
 
-    def immediate_attrs(self, root: Element | None = None) -> List[str]:
+    def get_immediate_attrs(self, root: Element | None = None) -> List[str]:
         root = self.root if root is None else root
-        immediate_attrs = {*root.attrib}
+        immediate_attrs = {attr for el in root for attr in el.attrib}
         return sorted(t for t in immediate_attrs if isinstance(t, str))
 
     def _get_texts(self) -> TextsMixin:
@@ -531,8 +532,8 @@ class TraitParser(_ReferenceXmlParser):
         return self._sub_category
 
     @property
-    def effects(self) -> List[Effect]:
-        return self._effects
+    def modifiers(self) -> Tuple[Modifier | AreaModifier, ...]:
+        return self._modifiers
 
     def __init__(self, file: PathLike) -> None:
         super().__init__(file)
@@ -540,11 +541,44 @@ class TraitParser(_ReferenceXmlParser):
                 and self.file.parent.parent.name != "Traits"):
             raise ValueError(f"Invalid input file: {self.file}")
         self._sub_category = self.root.attrib.get("category")
-        self._effects = [
-            Effect(
-                sub_el.tag, tuple(Parameter(attr, sub_el.attrib[attr]) for attr in sub_el.attrib))
-            for el in self.root.findall(".//effects") for sub_el in el
-        ]
+        self._modifiers = self._parse_modifiers()
+
+    @classmethod
+    def to_effect(cls, element: Element) -> Effect:  # recursive
+        name = element.tag
+        params = tuple(Parameter(attr, element.attrib[attr]) for attr in element.attrib)
+        sub_effects = tuple(cls.to_effect(sub_el) for sub_el in element)
+        return Effect(name, params, sub_effects)
+
+    def _parse_modifiers(self) -> Tuple[Modifier | AreaModifier, ...]:
+        modifier_tags = {mod_type.value for mod_type in ModifierType}
+        modifiers = []
+        for el in self.root:
+            if el.tag in modifier_tags:
+                type_ = ModifierType.from_tag(el.tag)
+                area_el = el.find("area")
+                if area_el is not None:
+                    radius = area_el.attrib.get("radius")
+                    area = Area(
+                        area_el.attrib["affects"], int(radius) if radius is not None else None)
+                else:
+                    area = None
+
+                for modifier_el in el.findall(".//modifier"):
+                    effects = [
+                        self.to_effect(sub_el) for el in modifier_el.findall("effects")
+                        for sub_el in el]
+                    conditions = [
+                        self.to_effect(sub_el) for el in modifier_el.findall("conditions")
+                        for sub_el in el]
+                    if area:
+                        modifiers.append(
+                            AreaModifier(type_, tuple(conditions), tuple(effects), area))
+                    else:
+                        modifiers.append(
+                            Modifier(type_, tuple(conditions), tuple(effects)))
+
+        return tuple(modifiers)
 
 
 def parse_traits() -> List[TraitParser]:

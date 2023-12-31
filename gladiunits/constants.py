@@ -1,6 +1,6 @@
 """
 
-    bookscrape.constants.py
+    gladiunits.constants.py
     ~~~~~~~~~~~~~~~~~~~~~~~
     Script's constants
 
@@ -20,9 +20,7 @@ Json = Dict[str, Any]
 PathLike = str | Path
 Method = Callable[[Any, Tuple[Any, ...]], Any]  # method with signature def methodname(self, *args)
 Function = Callable[[Tuple[Any, ...]], Any]  # function with signature def funcname(*args)
-BookRecord = namedtuple("BookRecord", ["title", "author"])
 
-REQUEST_TIMOUT = 15  # seconds
 FILENAME_TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S"
 READABLE_TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 SECONDS_IN_YEAR = 365.25 * 24 * 60 * 60  # with leap years

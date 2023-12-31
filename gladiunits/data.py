@@ -1,8 +1,8 @@
 from collections import namedtuple
-from enum import StrEnum
+from enum import Enum
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Tuple
+from typing import Literal, Tuple
 
 from gladiunits.utils import from_iterable
 
@@ -90,47 +90,59 @@ Parameter = namedtuple("Parameter", "name value")
 class Effect:
     name: str
     params: Tuple[Parameter, ...]
+    sub_effects: Tuple["Effect", ...]
 
 
-@dataclass(frozen=True)
-class Condition:
-    pass  # TODO
-
-
-class ModifierType(StrEnum):
+class ModifierType(Enum):
     REGULAR = 'modifiers'
     ON_COMBAT_OPPONENT = 'onCombatOpponentModifiers'
     ON_COMBAT_SELF = 'onCombatSelfModifiers'
     ON_ENEMY_KILLED_OPPONENT_TILE = 'onEnemyKilledOpponentTileModifiers'
+    ON_ENEMY_KILLED_SELF_AREA = 'onEnemyKilledSelf'
     ON_ENEMY_KILLED_SELF = 'onEnemyKilledSelfModifiers'
     ON_TILE_ENTERED = 'onTileEnteredModifiers'
     ON_TRAIT_ADDED = 'onTraitAddedModifiers'
     ON_TRAIT_REMOVED = 'onTraitRemovedModifiers'
     ON_TRANSPORT_DISEMBARKED = 'onTransportDisembarked'
     ON_TRANSPORT_EMBARKED = 'onTransportEmbarked'
+    ON_UNIT_DISAPPEARED_AREA = 'onUnitDisappeared'
     ON_UNIT_DISAPPEARED = 'onUnitDisappearedModifiers'
     ON_UNIT_DISEMBARKED = 'onUnitDisembarked'
     OPPONENT = 'opponentModifiers'
     PER_TURN = 'perTurnModifiers'
+    UNKNOWN = "unknown"
+
+    @classmethod
+    def from_tag(cls, tag: str) -> "ModifierType":
+        try:
+            return cls(tag)
+        except ValueError:
+            return cls.UNKNOWN
 
 
 @dataclass(frozen=True)
 class Modifier:
     type: ModifierType
-    conditions: Tuple[Condition, ...]
+    conditions: Tuple[Effect, ...]
     effects: Tuple[Effect, ...]
 
 
 @dataclass(frozen=True)
+class Area:
+    affects: Literal["Unit", "Player"]
+    radius: int | None
+
+
+@dataclass(frozen=True)
 class AreaModifier(Modifier):
-    pass  # TODO:
+    area: Area
 
 
 @dataclass(frozen=True)
 class Trait(TextsMixin, Origin):
-    sub_category: str | None  # Buff, Debuff etc.
+    sub_category: Literal["Buff", "Debuff"] | None
     reference: Path | None
-    modifiers: Tuple[Modifier | AreaModifier]
+    modifiers: Tuple[Modifier | AreaModifier, ...]
 
     def __post_init__(self) -> None:
         super().__post_init__()
