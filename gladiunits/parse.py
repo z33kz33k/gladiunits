@@ -271,6 +271,8 @@ class _ReferenceXmlParser(XmlParser):
         super().__init__(file)
         self._reference = self.root.attrib.get("icon")
         self._reference = Path(self._reference) if self._reference else None
+        if self.reference and not any(p in CATEGORIES for p in self.reference.parts):
+            self._reference = None  # self-reference, e.g. to Missing.xml
 
 
 class UpgradeParser(_ReferenceXmlParser):
@@ -535,6 +537,10 @@ class TraitParser(_ReferenceXmlParser):
     def modifiers(self) -> Tuple[Modifier | AreaModifier, ...]:
         return self._modifiers
 
+    @property
+    def target_conditions(self) -> Tuple[Effect, ...]:
+        return self._target_conditions
+
     def __init__(self, file: PathLike) -> None:
         super().__init__(file)
         if (self.file.parent.name != "Traits"
@@ -542,6 +548,7 @@ class TraitParser(_ReferenceXmlParser):
             raise ValueError(f"Invalid input file: {self.file}")
         self._sub_category = self.root.attrib.get("category")
         self._modifiers = self._parse_modifiers()
+        self._target_conditions = self._parse_target_conditions()
 
     @classmethod
     def to_effect(cls, element: Element) -> Effect:  # recursive
@@ -551,34 +558,47 @@ class TraitParser(_ReferenceXmlParser):
         return Effect(name, params, sub_effects)
 
     def _parse_modifiers(self) -> Tuple[Modifier | AreaModifier, ...]:
-        modifier_tags = {mod_type.value for mod_type in ModifierType}
-        modifiers = []
-        for el in self.root:
-            if el.tag in modifier_tags:
-                type_ = ModifierType.from_tag(el.tag)
-                area_el = el.find("area")
-                if area_el is not None:
-                    radius = area_el.attrib.get("radius")
-                    area = Area(
-                        area_el.attrib["affects"], int(radius) if radius is not None else None)
-                else:
-                    area = None
+        modifier_tags = {*{mod_type.value for mod_type in ModifierType}, "areas"}
+        modifiers, container_elements = [], [el for el in self.root if el.tag in modifier_tags]
+        for el in container_elements:
+            type_ = ModifierType.REGULAR if el.tag == "areas" else ModifierType.from_tag(el.tag)
 
-                for modifier_el in el.findall(".//modifier"):
-                    effects = [
-                        self.to_effect(sub_el) for el in modifier_el.findall("effects")
-                        for sub_el in el]
-                    conditions = [
-                        self.to_effect(sub_el) for el in modifier_el.findall("conditions")
-                        for sub_el in el]
-                    if area:
-                        modifiers.append(
-                            AreaModifier(type_, tuple(conditions), tuple(effects), area))
-                    else:
-                        modifiers.append(
-                            Modifier(type_, tuple(conditions), tuple(effects)))
+            for sub_el in el:
+                # area modifiers
+                if sub_el.tag == "area":
+                    radius = sub_el.attrib.get("radius")
+                    area = Area(
+                        sub_el.attrib["affects"], int(radius) if radius is not None else None)
+                    for modifier_el in sub_el.findall(".//modifier"):
+                        modifiers.append(self._parse_modifier(modifier_el, type_, area))
+                elif sub_el.tag == "modifier":
+                    modifiers.append(self._parse_modifier(sub_el, type_))
+                else:
+                    for modifier_el in sub_el.findall(".//modifier"):
+                        modifiers.append(self._parse_modifier(modifier_el, type_))
 
         return tuple(modifiers)
+
+    def _parse_modifier(
+            self, modifier_el: Element, type_: ModifierType,
+            area: Area | None = None) -> Modifier | AreaModifier:
+        effects = [
+            self.to_effect(sub_el) for el in modifier_el.findall("effects")
+            for sub_el in el]
+        conditions = [
+            self.to_effect(sub_el) for el in modifier_el.findall("conditions")
+            for sub_el in el]
+        if area:
+            return AreaModifier(type_, tuple(conditions), tuple(effects), area)
+        return Modifier(type_, tuple(conditions), tuple(effects))
+
+    def _parse_target_conditions(self) -> Tuple[Effect, ...]:
+        conditions = []
+        target_conditions_el = self.root.find("targetConditions")
+        if target_conditions_el is not None:
+            for sub_el in target_conditions_el:
+                conditions.append(self.to_effect(sub_el))
+        return tuple(conditions)
 
 
 def parse_traits() -> List[TraitParser]:

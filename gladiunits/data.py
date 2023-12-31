@@ -109,6 +109,7 @@ class ModifierType(Enum):
     ON_UNIT_DISAPPEARED = 'onUnitDisappearedModifiers'
     ON_UNIT_DISEMBARKED = 'onUnitDisembarked'
     OPPONENT = 'opponentModifiers'
+    # <perTurnModifiers endure="0"/> 'endure' is not parsed as it's always there and the same
     PER_TURN = 'perTurnModifiers'
     UNKNOWN = "unknown"
 
@@ -143,6 +144,7 @@ class Trait(TextsMixin, Origin):
     sub_category: Literal["Buff", "Debuff"] | None
     reference: Path | None
     modifiers: Tuple[Modifier | AreaModifier, ...]
+    target_conditions: Tuple[Effect, ...]
 
     def __post_init__(self) -> None:
         super().__post_init__()
