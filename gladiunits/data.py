@@ -83,31 +83,62 @@ class TextsMixin:
 
 
 @dataclass(frozen=True)
+class ReferenceMixin:
+    reference: Path | None  # TODO: to be resolved into actual referenced objects (if possible)
+
+    @property
+    def reffed_category(self) -> str | None:
+        if not self.reference:
+            return None
+        origin = Origin(self.reference)
+        return origin.category
+
+
+@dataclass(frozen=True)
+class Upgrade(ReferenceMixin, TextsMixin, Origin):
+    tier: int
+    required_upgrades: Tuple["Upgrade", ...]
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.category != "Upgrades":
+            raise ValueError(f"Not a path to an upgrade .xml: {self.path}")
+        if self.tier not in range(11):
+            raise ValueError("Tier must be an integer between 0 and 10")
+        if any(u.tier > self.tier for u in self.required_upgrades):
+            raise ValueError("Required upgrades cannot be of surpassing tier")
+
+
+@dataclass(frozen=True)
 class Parameter:
-    TYPES: ClassVar[Tuple[Tuple[str, Type], ...]] = (
-        ('action', str),
-        ('add', float),
-        ('addMax', float),
-        ('addMin', float),
-        ('count', int),
-        ('duration', float),
-        ('equal', float),
-        ('greater', float),
-        ('less', float),
-        ('match', str),
-        ('max', float),
-        ('min', float),
-        ('minMax', float),
-        ('minMin', float),
-        ('mul', float),
-        ('mulMax', float),
-        ('mulMin', float),
-        ('name', str),
-        ('range', float),
-        ('weapon', str),
-    )
-    name: str
+    TYPES: ClassVar[Tuple[Tuple[str, Type], ...]] = {
+        'action': str,
+        'add': float,
+        'addMax': float,
+        'addMin': float,
+        'count': int,
+        'duration': float,
+        'equal': float,
+        'greater': float,
+        'less': float,
+        'match': str,
+        'max': float,
+        'min': float,
+        'minMax': float,
+        'minMin': float,
+        'mul': float,
+        'mulMax': float,
+        'mulMin': float,
+        'name': str,
+        'range': float,
+        'weapon': str,
+    }
+    type: str
     value: str
+
+    def __post_init__(self) -> None:
+        if self.type not in self.TYPES:
+            raise TypeError(f"Unrecognized parameter type: {self.type!r}")
 
 
 @dataclass(frozen=True)
@@ -156,8 +187,12 @@ class Modifier:
     effects: Tuple[Effect, ...]
 
     @property
+    def all_effects(self) -> List[Effect]:
+        return [*self.conditions, *self.effects]
+
+    @property
     def all_params(self) -> List[Parameter]:
-        return [p for e in [*self.conditions, *self.effects] for p in e.all_params]
+        return [p for e in self.all_effects for p in e.all_params]
 
 
 @dataclass(frozen=True)
@@ -172,10 +207,17 @@ class AreaModifier(Modifier):
 
 
 @dataclass(frozen=True)
-class Trait(TextsMixin, Origin):
-    sub_category: Literal["Buff", "Debuff"] | None
-    reference: Path | None
+class ModifiersMixin:
     modifiers: Tuple[Modifier | AreaModifier, ...]
+
+    @property
+    def all_effects(self) -> List[Effect]:
+        return [e for m in self.modifiers for e in m.all_effects]
+
+
+@dataclass(frozen=True)
+class Trait(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
+    sub_category: Literal["Buff", "Debuff"] | None
     target_conditions: Tuple[Effect, ...]
 
     def __post_init__(self) -> None:
@@ -183,9 +225,13 @@ class Trait(TextsMixin, Origin):
         if self.category != "Traits":
             raise ValueError(f"Not a path to a trait .xml: {self.path}")
 
+    @property
+    def all_effects(self) -> List[Effect]:  # override
+        return [*self.target_conditions, *super().all_effects]
+
 
 @dataclass(frozen=True)
-class Weapon(TextsMixin, Origin):
+class Weapon(ModifiersMixin, TextsMixin, Origin):
     attacks: int | None
     melee_armor_penetration: int | None
     melee_damage: float | None
@@ -201,29 +247,6 @@ class Weapon(TextsMixin, Origin):
 
 
 @dataclass(frozen=True)
-class Upgrade(TextsMixin, Origin):
-    tier: int
-    reference: Path | None
-    required_upgrades: Tuple["Upgrade", ...]
-
-    @property
-    def reffed_category(self) -> str | None:
-        if not self.reference:
-            return None
-        origin = Origin(self.reference)
-        return origin.category
-
-    def __post_init__(self) -> None:
-        super().__post_init__()
-        if self.category != "Upgrades":
-            raise ValueError(f"Not a path to an upgrade .xml: {self.path}")
-        if self.tier not in range(11):
-            raise ValueError("Tier must be an integer between 0 and 10")
-        if any(u.tier > self.tier for u in self.required_upgrades):
-            raise ValueError("Required upgrades cannot be of surpassing tier")
-
-
-@dataclass(frozen=True)
 class Action:
     weapon: Weapon | None
     cooldown: int | None
@@ -235,7 +258,7 @@ class Action:
 
 
 @dataclass(frozen=True)
-class Unit(TextsMixin, Origin):
+class Unit(ModifiersMixin, TextsMixin, Origin):
     armor: int
     hitpoints: float
     movement: int

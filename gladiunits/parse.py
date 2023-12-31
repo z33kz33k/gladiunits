@@ -254,6 +254,26 @@ class XmlParser(FileParser):
         if self.ROOT_TAG and self.root.tag != self.ROOT_TAG:
             raise ValueError(f"Invalid root tag: {self.root.tag!r}")
 
+    @classmethod
+    def to_effect(cls, element: Element) -> Effect:  # recursive
+        name = element.tag
+        params = tuple(Parameter(attr, element.attrib[attr]) for attr in element.attrib)
+        sub_effects = tuple(cls.to_effect(sub_el) for sub_el in element)
+        return Effect(name, params, sub_effects)
+
+    def parse_modifier(
+            self, modifier_el: Element, type_: ModifierType,
+            area: Area | None = None) -> Modifier | AreaModifier:
+        effects = [
+            self.to_effect(sub_el) for el in modifier_el.findall("effects")
+            for sub_el in el]
+        conditions = [
+            self.to_effect(sub_el) for el in modifier_el.findall("conditions")
+            for sub_el in el]
+        if area:
+            return AreaModifier(type_, tuple(conditions), tuple(effects), area)
+        return Modifier(type_, tuple(conditions), tuple(effects))
+
 
 class _ReferenceXmlParser(XmlParser):
     @property
@@ -550,13 +570,6 @@ class TraitParser(_ReferenceXmlParser):
         self._modifiers = self._parse_modifiers()
         self._target_conditions = self._parse_target_conditions()
 
-    @classmethod
-    def to_effect(cls, element: Element) -> Effect:  # recursive
-        name = element.tag
-        params = tuple(Parameter(attr, element.attrib[attr]) for attr in element.attrib)
-        sub_effects = tuple(cls.to_effect(sub_el) for sub_el in element)
-        return Effect(name, params, sub_effects)
-
     def _parse_modifiers(self) -> Tuple[Modifier | AreaModifier, ...]:
         modifier_tags = {*{mod_type.value for mod_type in ModifierType}, "areas"}
         modifiers, container_elements = [], [el for el in self.root if el.tag in modifier_tags]
@@ -570,27 +583,14 @@ class TraitParser(_ReferenceXmlParser):
                     area = Area(
                         sub_el.attrib["affects"], int(radius) if radius is not None else None)
                     for modifier_el in sub_el.findall(".//modifier"):
-                        modifiers.append(self._parse_modifier(modifier_el, type_, area))
+                        modifiers.append(self.parse_modifier(modifier_el, type_, area))
                 elif sub_el.tag == "modifier":
-                    modifiers.append(self._parse_modifier(sub_el, type_))
+                    modifiers.append(self.parse_modifier(sub_el, type_))
                 else:
                     for modifier_el in sub_el.findall(".//modifier"):
-                        modifiers.append(self._parse_modifier(modifier_el, type_))
+                        modifiers.append(self.parse_modifier(modifier_el, type_))
 
         return tuple(modifiers)
-
-    def _parse_modifier(
-            self, modifier_el: Element, type_: ModifierType,
-            area: Area | None = None) -> Modifier | AreaModifier:
-        effects = [
-            self.to_effect(sub_el) for el in modifier_el.findall("effects")
-            for sub_el in el]
-        conditions = [
-            self.to_effect(sub_el) for el in modifier_el.findall("conditions")
-            for sub_el in el]
-        if area:
-            return AreaModifier(type_, tuple(conditions), tuple(effects), area)
-        return Modifier(type_, tuple(conditions), tuple(effects))
 
     def _parse_target_conditions(self) -> Tuple[Effect, ...]:
         conditions = []
@@ -614,3 +614,7 @@ def parse_traits() -> List[TraitParser]:
         except XMLSyntaxError:
             pass
     return traits
+
+
+class WeaponParser(XmlParser):
+    pass
