@@ -1,7 +1,7 @@
 from enum import Enum
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Tuple, ClassVar, Type
+from typing import Any, Dict, List, Literal, Tuple, ClassVar
 
 from gladiunits.utils import from_iterable
 
@@ -18,6 +18,20 @@ CATEGORIES = [
     'Upgrades',
     'Weapons',
     'WorldParameters',
+]
+PARSED_CATEGORIES = [
+    # 'Actions',
+    # 'Buildings',
+    # 'Cities',
+    # 'Factions',
+    # 'Features',
+    # 'Items',
+    # 'Scenarios',
+    'Traits',
+    'Units',
+    'Upgrades',
+    'Weapons',
+    # 'WorldParameters',
 ]
 FACTIONS = [
     'AdeptusMechanicus',
@@ -105,6 +119,7 @@ class Parameter:
         'add': float,
         'addMax': float,
         'addMin': float,
+        'base': int,
         'count': int,
         'duration': int,
         'equal': float,
@@ -119,7 +134,9 @@ class Parameter:
         'mulMax': float,
         'mulMin': float,
         'name': Path,
+        'rank': int,
         'range': int,
+        'requiredUpgrade': Path,
         'weapon': Path,
     }
     type: str
@@ -236,7 +253,7 @@ class ModifiersMixin:
 @dataclass(frozen=True)
 class Upgrade(ReferenceMixin, TextsMixin, Origin):
     tier: int
-    required_upgrades: Tuple[CategoryEffect, ...]
+    required_upgrades: Tuple["Upgrade", ...]
     dlc: str | None
 
     def __post_init__(self) -> None:
@@ -249,7 +266,7 @@ class Upgrade(ReferenceMixin, TextsMixin, Origin):
 
 @dataclass(frozen=True)
 class Trait(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
-    sub_category: Literal["Buff", "Debuff"] | None
+    type: Literal["Buff", "Debuff"] | None
     target_conditions: Tuple[Effect, ...]
     max_rank: int | None
     stacking: bool | None
@@ -265,14 +282,35 @@ class Trait(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
 
 
 @dataclass(frozen=True)
+class Target:
+    max_range: int
+    conditions: Tuple[Effect, ...]
+
+
+class WeaponType(Enum):
+    BEAM = 'beamWeapon'
+    EXPLOSIVE = 'explosiveWeapon'
+    FLAMER = 'flamerWeapon'
+    GRENADE = 'grenadeWeapon'
+    MISSILE = 'missileWeapon'
+    POWER = 'powerWeapon'
+    PROJECTILE = 'projectileWeapon'
+    REGULAR = 'weapon'
+    UNKNOWN = 'unknown'
+
+    @classmethod
+    def from_tag(cls, tag: str) -> "WeaponType":
+        try:
+            return cls(tag)
+        except ValueError:
+            return cls.UNKNOWN
+
+
+@dataclass(frozen=True)
 class Weapon(ModifiersMixin, TextsMixin, Origin):
-    attacks: int | None
-    melee_armor_penetration: int | None
-    melee_damage: float | None
-    ranged_armor_penetration: int | None
-    ranged_damage: float | None
-    range: int | None
-    traits: Tuple[Trait, ...]
+    type: WeaponType
+    target: Target | None
+    traits: Tuple[CategoryEffect, ...]
 
     def __post_init__(self) -> None:
         super().__post_init__()
