@@ -257,30 +257,35 @@ class XmlParser(FileParser):
             raise ValueError(f"Invalid root tag: {self.root.tag!r}")
 
     @classmethod
-    def to_effect(cls, element: Element,
-                  parent_category: str | None = None) -> Effect:  # recursive
+    def to_effect(
+            cls, element: Element,
+            parent_category: str | None = None, process_sub_effects=True) -> Effect:  # recursive
         name = element.tag
         category = CategoryEffect.get_category(name) or parent_category
-        params = []
-        for attr in element.attrib:
-            if attr == "name" and category:
-                params.append(Parameter("name", Path(category) / element.attrib["name"]))
-            elif CategoryEffect.is_valid(attr) or CategoryEffect.is_valid(
-                    attr.replace("required", "")):
-                if attr.startswith("required"):
-                    attr_category = CategoryEffect.get_category(attr.replace("required", ""))
-                else:
-                    attr_category = CategoryEffect.get_category(attr)
-                params.append(Parameter(attr, Path(attr_category) / element.attrib[attr]))
-            else:
-                value_type = Parameter.TYPES.get(attr)
-                value_type = value_type or str
-                params.append(Parameter(attr, value_type(element.attrib[attr])))
+        params = [cls.to_param(attr, value, category) for attr, value in element.attrib.items()]
 
-        sub_effects = tuple(cls.to_effect(sub_el, category) for sub_el in element)
-        if category and not parent_category:
+        if process_sub_effects:
+            sub_effects = tuple(cls.to_effect(sub_el, category) for sub_el in element)
+        else:
+            sub_effects = ()
+        if CategoryEffect.is_valid(name):
             return CategoryEffect(name, tuple(params), sub_effects)
         return Effect(name, tuple(params), sub_effects)
+
+    @staticmethod
+    def to_param(attr: str, value: str, category: str | None) -> Parameter:
+        if attr == "name" and category:
+            return Parameter("name", Path(category) / value)
+        elif CategoryEffect.is_valid(attr):
+            attr_category = CategoryEffect.get_category(attr)
+            return Parameter(attr, Path(attr_category) / value)
+        elif attr == "icon":
+            return Parameter("reference", Origin(Path(value)).category_path)
+        value_type = Parameter.TYPES.get(attr)
+        value_type = value_type or str
+        if value_type is bool:
+            value = int(value)
+        return Parameter(attr, value_type(value))
 
     def parse_effects(
             self, parent_element: Element, container_xpath="effects") -> Tuple[Effect, ...]:

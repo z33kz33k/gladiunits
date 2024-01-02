@@ -136,11 +136,12 @@ class Parameter:
         'name': Path,
         'rank': int,
         'range': int,
+        'reference': Path,
         'requiredUpgrade': Path,
         'weapon': Path,
     }
     type: str
-    value: str
+    value: Path | float | int | str
 
     def __post_init__(self) -> None:
         if self.type not in self.TYPES:
@@ -168,15 +169,17 @@ class CategoryEffect(Effect):
     def is_negative(name: str) -> bool:
         if len(name) < 3:
             return False
-        return name.startswith("no") and name[2].isupper()
+        return name.startswith("no") and name[2:] in {cat[:-1] for cat in CATEGORIES}
 
     @classmethod
     def get_category(cls, name: str) -> str | None:
         if name == "city" or name == "noCity":
             return "Cities"
-        if cls.is_negative(name):
-            name = name[2:]
-        return from_iterable(CATEGORIES, lambda c: c == f"{name[0].upper() + name[1:]}s")
+        categories = [cat[:-1].lower() for cat in CATEGORIES]
+        cat = from_iterable(categories, lambda c: c in name.lower())
+        if not cat:
+            return None
+        return CATEGORIES[categories.index(cat)]
 
     @classmethod
     def is_valid(cls, name: str) -> bool:
