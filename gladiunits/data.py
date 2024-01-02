@@ -1,19 +1,23 @@
 from enum import Enum
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Literal, Tuple, ClassVar, Type
+from typing import Any, Dict, List, Literal, Tuple, ClassVar, Type
 
 from gladiunits.utils import from_iterable
 
 CATEGORIES = [
     'Actions',
     'Buildings',
+    'Cities',
+    'Factions',
     'Features',
     'Items',
+    'Scenarios',
     'Traits',
     'Units',
     'Upgrades',
-    'Weapons'
+    'Weapons',
+    'WorldParameters',
 ]
 FACTIONS = [
     'AdeptusMechanicus',
@@ -95,29 +99,14 @@ class ReferenceMixin:
 
 
 @dataclass(frozen=True)
-class Upgrade(ReferenceMixin, TextsMixin, Origin):
-    tier: int
-    required_upgrades: Tuple["Upgrade", ...]
-
-    def __post_init__(self) -> None:
-        super().__post_init__()
-        if self.category != "Upgrades":
-            raise ValueError(f"Not a path to an upgrade .xml: {self.path}")
-        if self.tier not in range(11):
-            raise ValueError("Tier must be an integer between 0 and 10")
-        if any(u.tier > self.tier for u in self.required_upgrades):
-            raise ValueError("Required upgrades cannot be of surpassing tier")
-
-
-@dataclass(frozen=True)
 class Parameter:
-    TYPES: ClassVar[Tuple[Tuple[str, Type], ...]] = {
-        'action': str,
+    TYPES: ClassVar[Dict[str, Any]] = {
+        'action': Path,
         'add': float,
         'addMax': float,
         'addMin': float,
         'count': int,
-        'duration': float,
+        'duration': int,
         'equal': float,
         'greater': float,
         'less': float,
@@ -129,9 +118,9 @@ class Parameter:
         'mul': float,
         'mulMax': float,
         'mulMin': float,
-        'name': str,
-        'range': float,
-        'weapon': str,
+        'name': Path,
+        'range': int,
+        'weapon': Path,
     }
     type: str
     value: str
@@ -150,6 +139,35 @@ class Effect:
     @property
     def all_params(self) -> List[Parameter]:
         return [*self.params, *[p for e in self.sub_effects for p in e.all_params]]
+
+
+@dataclass(frozen=True)
+class CategoryEffect(Effect):
+    def __post_init__(self) -> None:
+        if not self.is_valid(self.name):
+            raise TypeError(f"Not a category effect: {self.name!r}")
+
+    @staticmethod
+    def is_negative(name: str) -> bool:
+        if len(name) < 3:
+            return False
+        return name.startswith("no") and name[2].isupper()
+
+    @classmethod
+    def get_category(cls, name: str) -> str | None:
+        if name == "city" or name == "noCity":
+            return "Cities"
+        if cls.is_negative(name):
+            name = name[2:]
+        return from_iterable(CATEGORIES, lambda c: c == f"{name[0].upper() + name[1:]}s")
+
+    @classmethod
+    def is_valid(cls, name: str) -> bool:
+        return cls.get_category(name) is not None
+
+    @property
+    def category(self) -> str:
+        return self.get_category(self.name)
 
 
 class ModifierType(Enum):
@@ -216,9 +234,25 @@ class ModifiersMixin:
 
 
 @dataclass(frozen=True)
+class Upgrade(ReferenceMixin, TextsMixin, Origin):
+    tier: int
+    required_upgrades: Tuple[CategoryEffect, ...]
+    dlc: str | None
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.category != "Upgrades":
+            raise ValueError(f"Not a path to an upgrade .xml: {self.path}")
+        if self.tier not in range(11):
+            raise ValueError("Tier must be an integer between 0 and 10")
+
+
+@dataclass(frozen=True)
 class Trait(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
     sub_category: Literal["Buff", "Debuff"] | None
     target_conditions: Tuple[Effect, ...]
+    max_rank: int | None
+    stacking: bool | None
 
     def __post_init__(self) -> None:
         super().__post_init__()

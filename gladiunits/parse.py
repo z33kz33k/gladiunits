@@ -8,7 +8,7 @@ from lxml.etree import XMLSyntaxError, _Element as Element
 
 from gladiunits.constants import PathLike
 from gladiunits.data import Area, AreaModifier, Modifier, Origin, Parameter, TextsMixin, CATEGORIES, \
-    FACTIONS, Effect, ModifierType
+    FACTIONS, Effect, CategoryEffect, ModifierType
 
 
 class FileParser:
@@ -131,6 +131,7 @@ def _parse_displayed_texts() -> Dict[str, str]:
         r"xml/Core/Languages/English/Units.xml",
         r"xml/Core/Languages/English/Upgrades.xml",
         r"xml/Core/Languages/English/Weapons.xml",
+        r"xml/Core/Languages/English/WorldParameters.xml",
     )
     parsers = [_CoreFileParser(file) for file in files]
     parsers.sort(key=lambda p: len(p.reffed_lines))
@@ -255,11 +256,30 @@ class XmlParser(FileParser):
             raise ValueError(f"Invalid root tag: {self.root.tag!r}")
 
     @classmethod
-    def to_effect(cls, element: Element) -> Effect:  # recursive
+    def to_effect(cls, element: Element,
+                  parent_category: str | None = None) -> Effect:  # recursive
         name = element.tag
-        params = tuple(Parameter(attr, element.attrib[attr]) for attr in element.attrib)
-        sub_effects = tuple(cls.to_effect(sub_el) for sub_el in element)
-        return Effect(name, params, sub_effects)
+        category = CategoryEffect.get_category(name) or parent_category
+        params = []
+        for attr in element.attrib:
+            if attr == "name" and category:
+                params.append(Parameter("name", Path(category) / element.attrib["name"]))
+            elif CategoryEffect.is_valid(attr) or CategoryEffect.is_valid(
+                    attr.replace("required", "")):
+                if attr.startswith("required"):
+                    attr_category = CategoryEffect.get_category(attr.replace("required", ""))
+                else:
+                    attr_category = CategoryEffect.get_category(attr)
+                params.append(Parameter(attr, Path(attr_category) / element.attrib[attr]))
+            else:
+                value_type = Parameter.TYPES.get(attr)
+                value_type = value_type or str
+                params.append(Parameter(attr, value_type(element.attrib[attr])))
+
+        sub_effects = tuple(cls.to_effect(sub_el, category) for sub_el in element)
+        if category and not parent_category:
+            return CategoryEffect(name, tuple(params), sub_effects)
+        return Effect(name, tuple(params), sub_effects)
 
     def parse_modifier(
             self, modifier_el: Element, type_: ModifierType,
@@ -308,8 +328,12 @@ class UpgradeParser(_ReferenceXmlParser):
         return self._tier
 
     @property
-    def required_upgrades(self) -> List[Path]:
+    def required_upgrades(self) -> Tuple[Effect, ...]:
         return self._required_upgrades
+
+    @property
+    def dlc(self) -> str | None:
+        return self._dlc
 
     def __init__(self, file: PathLike) -> None:
         super().__init__(file)
@@ -318,13 +342,16 @@ class UpgradeParser(_ReferenceXmlParser):
             raise ValueError(f"Invalid input file: {self.file}")
         self._tier = self.root.attrib.get("position")
         self._tier = int(self._tier) if self._tier else 0
-        self._required_upgrades = [Path(self.origin.category) / el.attrib["name"] for el
-                                   in self.root.findall("requiredUpgrades/upgrade")]
+        self._required_upgrades = tuple(self.to_effect(el) for el
+                                        in self.root.findall("requiredUpgrades/upgrade"))
+        self._dlc = self.root.attrib.get("dlc")
+        if self._dlc:
+            self._dlc = DISPLAYED_TEXTS.get(str(Path("WorldParameters") / self._dlc))
 
 
 def parse_upgrades() -> List[UpgradeParser]:
     # required correcting a malformed original file:
-    # xml/World/Upgrades/Tau/RipykaVa.xml (doubly defined 'icon' attribute)
+    # Upgrades/Tau/RipykaVa.xml (doubly defined 'icon' attribute)
     rootdir = Path(r"xml/World/Upgrades")
     return [UpgradeParser(f) for p in rootdir.iterdir() if p.is_dir() for f in p.iterdir()]
 
@@ -561,6 +588,14 @@ class TraitParser(_ReferenceXmlParser):
     def target_conditions(self) -> Tuple[Effect, ...]:
         return self._target_conditions
 
+    @property
+    def max_rank(self) -> int | None:
+        return self._max_rank
+
+    @property
+    def stacking(self) -> bool | None:
+        return self._stacking
+
     def __init__(self, file: PathLike) -> None:
         super().__init__(file)
         if (self.file.parent.name != "Traits"
@@ -569,6 +604,12 @@ class TraitParser(_ReferenceXmlParser):
         self._sub_category = self.root.attrib.get("category")
         self._modifiers = self._parse_modifiers()
         self._target_conditions = self._parse_target_conditions()
+        self._max_rank = self.root.attrib.get("rankMax")
+        if self._max_rank:
+            self._max_rank = int(self._max_rank)
+        self._stacking = self.root.attrib.get("stacking")
+        if self._stacking:
+            self._stacking = True if self._stacking == "1" else False
 
     def _parse_modifiers(self) -> Tuple[Modifier | AreaModifier, ...]:
         modifier_tags = {*{mod_type.value for mod_type in ModifierType}, "areas"}
@@ -603,7 +644,7 @@ class TraitParser(_ReferenceXmlParser):
 
 def parse_traits() -> List[TraitParser]:
     # required correcting a malformed original file:
-    # xml/World/Traits/ChaosSpaceMarines/RunesOfTheBloodGod.xml (missing whitespace)
+    # Traits/ChaosSpaceMarines/RunesOfTheBloodGod.xml (missing whitespace)
     rootdir = Path(r"xml/World/Traits")
     flat = [f for f in rootdir.iterdir() if f.is_file()]
     nested = [f for p in rootdir.iterdir() if p.is_dir() for f in p.iterdir()]
@@ -612,9 +653,17 @@ def parse_traits() -> List[TraitParser]:
         try:
             traits.append(TraitParser(f))
         except XMLSyntaxError:
-            pass
+            pass  # Traits/OrkoidFungusFood.xml (the body commented out)
     return traits
 
 
+# TODO
+
+
 class WeaponParser(XmlParser):
-    pass
+    ROOT_TAG = "weapon"
+
+
+class UnitParser(XmlParser):
+    ROOT_TAG = "unit"
+
