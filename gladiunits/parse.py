@@ -1,7 +1,6 @@
 import re
 from collections import deque
 from pathlib import Path
-from typing import Dict, List, Tuple
 
 import lxml
 from lxml.etree import XMLSyntaxError, _Element as Element
@@ -18,7 +17,7 @@ class FileParser:
         return self._file
 
     @property
-    def lines(self) -> List[str]:
+    def lines(self) -> list[str]:
         with self.file.open(encoding='utf8') as f:
             lines = [*f]
         return lines
@@ -97,19 +96,19 @@ class _CoreFileParser(FileParser):
         return self.file.stem
 
     @property
-    def entry_lines(self) -> List[_EntryLine]:
+    def entry_lines(self) -> list[_EntryLine]:
         return self._entry_lines
 
     @property
-    def plain_lines(self) -> List[_EntryLine]:
+    def plain_lines(self) -> list[_EntryLine]:
         return [line for line in self.entry_lines if not line.ref]
 
     @property
-    def reffed_lines(self) -> List[_EntryLine]:
+    def reffed_lines(self) -> list[_EntryLine]:
         return [line for line in self.entry_lines if line.ref]
 
     @property
-    def refs(self) -> List[Path]:
+    def refs(self) -> list[Path]:
         return sorted({el.ref for el in self.reffed_lines}, key=lambda r: str(r))
 
     def __init__(self, file: PathLike) -> None:
@@ -122,7 +121,7 @@ class _CoreFileParser(FileParser):
                 self._entry_lines.append(_EntryLine(line, self.category))
 
 
-def _parse_displayed_texts() -> Dict[str, str]:
+def _parse_displayed_texts() -> dict[str, str]:
     files = (
         r"xml/Core/Languages/English/Actions.xml",
         r"xml/Core/Languages/English/Buildings.xml",
@@ -227,20 +226,20 @@ class XmlParser(FileParser):
         # use re.sub with a function as replacer
         return re.sub(r"(?<=value=\")<.*>(?=\")", replace_brackets, line)
 
-    def collect_tags(self, root: Element | None = None) -> List[str]:
+    def collect_tags(self, root: Element | None = None) -> list[str]:
         root = self.root if root is None else root
         return sorted({el.tag for el in root.iter(Element)})
 
-    def collect_attrs(self, root: Element | None = None) -> List[str]:
+    def collect_attrs(self, root: Element | None = None) -> list[str]:
         root = self.root if root is None else root
         return sorted({attr for el in root.iter(Element) for attr in el.attrib})
 
-    def get_immediate_tags(self, root: Element | None = None) -> List[str]:
+    def get_immediate_tags(self, root: Element | None = None) -> list[str]:
         root = self.root if root is None else root
         immediate_tags = [el.tag for el in root]
         return sorted(t for t in immediate_tags if isinstance(t, str))
 
-    def get_immediate_attrs(self, root: Element | None = None) -> List[str]:
+    def get_immediate_attrs(self, root: Element | None = None) -> list[str]:
         root = self.root if root is None else root
         immediate_attrs = {attr for el in root for attr in el.attrib}
         return sorted(t for t in immediate_attrs if isinstance(t, str))
@@ -274,23 +273,27 @@ class XmlParser(FileParser):
 
     @staticmethod
     def to_param(attr: str, value: str, category: str | None) -> Parameter:
-        if attr == "name" and category:
-            return Parameter("name", Path(category) / value)
-        elif CategoryEffect.is_valid(attr):
-            attr_category = CategoryEffect.get_category(attr)
-            return Parameter(attr, Path(attr_category) / value)
-        elif attr == "icon":
-            return Parameter("reference", Origin(Path(value)).category_path)
         value_type = Parameter.TYPES.get(attr)
         value_type = value_type or str
+        if attr == "name" and category:
+            return Parameter("name", Origin(Path(category) / value))
+        elif CategoryEffect.is_valid(attr) and value_type is Origin:
+            attr_category = CategoryEffect.get_category(attr)
+            return Parameter(attr, Origin(Path(attr_category) / value))
+        elif attr == "icon":
+            return Parameter("reference", Origin(Path(value)))
         if value_type is bool:
             value = int(value)
+        elif value_type is Origin:
+            value = Path(value)
         return Parameter(attr, value_type(value))
 
     def parse_effects(
-            self, parent_element: Element, container_xpath="effects") -> Tuple[Effect, ...]:
+            self, parent_element: Element,
+            container_xpath="effects", process_sub_effects=True) -> tuple[Effect, ...]:
         return tuple(
-            self.to_effect(sub_el) for el in parent_element.findall(container_xpath)
+            self.to_effect(sub_el, process_sub_effects=process_sub_effects)
+            for el in parent_element.findall(container_xpath)
             for sub_el in el)
 
     def _parse_modifier(
@@ -302,7 +305,7 @@ class XmlParser(FileParser):
             return AreaModifier(type_, conditions, effects, area)
         return Modifier(type_, conditions, effects)
 
-    def parse_modifiers(self) -> Tuple[Modifier | AreaModifier, ...]:
+    def parse_modifiers(self) -> tuple[Modifier | AreaModifier, ...]:
         modifier_tags = {*{mod_type.value for mod_type in ModifierType}, "areas"}
         modifiers, container_elements = [], [el for el in self.root if el.tag in modifier_tags]
         for el in container_elements:
@@ -311,9 +314,7 @@ class XmlParser(FileParser):
             for sub_el in el:
                 # area modifiers
                 if sub_el.tag == "area":
-                    radius = sub_el.attrib.get("radius")
-                    area = Area(
-                        sub_el.attrib["affects"], int(radius) if radius is not None else None)
+                    area = self.parse_area(sub_el)
                     for modifier_el in sub_el.findall(".//modifier"):
                         modifiers.append(self._parse_modifier(modifier_el, type_, area))
                 elif sub_el.tag == "modifier":
@@ -324,52 +325,58 @@ class XmlParser(FileParser):
 
         return tuple(modifiers)
 
+    @staticmethod
+    def parse_area(area_el: Element) -> Area:
+        radius = area_el.attrib.get("radius")
+        exclude_radius = area_el.attrib.get("excludeRadius")
+        return Area(
+            area_el.attrib["affects"],
+            int(radius) if radius is not None else None,
+            int(exclude_radius) if exclude_radius is not None else None
+        )
 
-class _ReferenceXmlParser(XmlParser):
-    @property
-    def reference(self) -> Path | None:
-        return self._reference
-
-    @property
-    def reffed_category(self) -> str | None:  # TODO: remove (duplicated in Upgrade)
-        if not self.reference:
+    def parse_reference(self, element: Element | None = None) -> Origin | None:
+        element = self.root if element is None else element
+        reference = element.attrib.get("icon")
+        if not reference:
             return None
-        origin = Origin(self.reference)
-        return origin.category
-
-    def __init__(self, file: PathLike) -> None:
-        super().__init__(file)
-        self._reference = self.root.attrib.get("icon")
-        self._reference = Path(self._reference) if self._reference else None
-        if self.reference and not any(p in CATEGORIES for p in self.reference.parts):
-            self._reference = None  # self-reference, e.g. to Missing.xml
+        reference = Path(reference)
+        if not any(p in CATEGORIES for p in reference.parts):
+            return None  # self-reference, e.g. in Traits/Missing.xml
+        return Origin(reference)
 
 
-class UpgradeParser(_ReferenceXmlParser):
+class UpgradeParser(XmlParser):
     """Parser of 'Upgrades' .xml files.
 
     'strategyModifiers' tag and its content is used by the game AI and as such is not of
     interest for this project.
     """
     ROOT_TAG = "upgrade"
+    IMMEDIATE_TAGS = ['requiredUpgrades', 'strategyModifiers']
 
     @property
     def tier(self) -> int:
         return self._tier
 
     @property
-    def required_upgrades(self) -> Tuple[Effect, ...]:  # TODO: parse it into actual Upgrade objects
+    def required_upgrades(self) -> tuple[Effect, ...]:  # TODO: parse it into actual Upgrade objects
         return self._required_upgrades
 
     @property
     def dlc(self) -> str | None:
         return self._dlc
 
+    @property
+    def reference(self) -> Origin | None:
+        return self._reference
+
     def __init__(self, file: PathLike) -> None:
         super().__init__(file)
         if (self.file.parent.name not in FACTIONS
                 or self.file.parent.parent.name != "Upgrades"):
             raise ValueError(f"Invalid input file: {self.file}")
+        self._reference = self.parse_reference()
         self._tier = self.root.attrib.get("position")
         self._tier = int(self._tier) if self._tier else 0
         self._required_upgrades = self.parse_effects(self.root, "requiredUpgrades")
@@ -378,14 +385,14 @@ class UpgradeParser(_ReferenceXmlParser):
             self._dlc = DISPLAYED_TEXTS.get(str(Path("WorldParameters") / self._dlc))
 
 
-def parse_upgrades() -> List[UpgradeParser]:
+def parse_upgrades() -> list[UpgradeParser]:
     # required correcting a malformed original file:
     # Upgrades/Tau/RipykaVa.xml (doubly defined 'icon' attribute)
     rootdir = Path(r"xml/World/Upgrades")
     return [UpgradeParser(f) for p in rootdir.iterdir() if p.is_dir() for f in p.iterdir()]
 
 
-class TraitParser(_ReferenceXmlParser):
+class TraitParser(XmlParser):
     """Parser of 'Traits' .xml files.
 
     <modifiers> or those that end with such ending contain (multiple in theory but usually only
@@ -610,11 +617,11 @@ class TraitParser(_ReferenceXmlParser):
         return self._type
 
     @property
-    def modifiers(self) -> Tuple[Modifier | AreaModifier, ...]:
+    def modifiers(self) -> tuple[Modifier | AreaModifier, ...]:
         return self._modifiers
 
     @property
-    def target_conditions(self) -> Tuple[Effect, ...]:
+    def target_conditions(self) -> tuple[Effect, ...]:
         return self._target_conditions
 
     @property
@@ -625,11 +632,16 @@ class TraitParser(_ReferenceXmlParser):
     def stacking(self) -> bool | None:
         return self._stacking
 
+    @property
+    def reference(self) -> Origin | None:
+        return self._reference
+
     def __init__(self, file: PathLike) -> None:
         super().__init__(file)
         if (self.file.parent.name != "Traits"
                 and self.file.parent.parent.name != "Traits"):
             raise ValueError(f"Invalid input file: {self.file}")
+        self._reference = self.parse_reference()
         self._type = self.root.attrib.get("category")
         self._modifiers = self.parse_modifiers()
         self._target_conditions = self._parse_target_conditions()
@@ -640,7 +652,7 @@ class TraitParser(_ReferenceXmlParser):
         if self._stacking:
             self._stacking = True if self._stacking == "1" else False
 
-    def _parse_target_conditions(self) -> Tuple[Effect, ...]:
+    def _parse_target_conditions(self) -> tuple[Effect, ...]:
         conditions = []
         target_conditions_el = self.root.find("targetConditions")
         if target_conditions_el is not None:
@@ -649,7 +661,7 @@ class TraitParser(_ReferenceXmlParser):
         return tuple(conditions)
 
 
-def parse_traits() -> List[TraitParser]:
+def parse_traits() -> list[TraitParser]:
     # required correcting a malformed original file:
     # Traits/ChaosSpaceMarines/RunesOfTheBloodGod.xml (missing whitespace)
     rootdir = Path(r"xml/World/Traits")
@@ -666,9 +678,11 @@ def parse_traits() -> List[TraitParser]:
 
 class WeaponParser(XmlParser):
     ROOT_TAG = "weapon"
+    IMMEDIATE_TAGS = ['model', 'modifiers', 'target', 'traits']
+    CONDITIONS = ['encounter']
 
     @property
-    def modifiers(self) -> Tuple[Modifier, ...]:
+    def modifiers(self) -> tuple[Modifier, ...]:
         return self._modifiers
 
     @property
@@ -680,13 +694,18 @@ class WeaponParser(XmlParser):
         return self._target
 
     @property
-    def traits(self) -> Tuple[Effect, ...]:
+    def traits(self) -> tuple[Effect, ...]:
         return self._traits
+
+    @property
+    def reference(self) -> Origin | None:
+        return self._reference
 
     def __init__(self, file: PathLike) -> None:
         super().__init__(file)
         if self.file.parent.name != "Weapons":
             raise ValueError(f"Invalid input file: {self.file}")
+        self._reference = self.parse_reference()
         self._modifiers = self.parse_modifiers()
         self._type = self._parse_type()
         self._target = self.root.find("target")
@@ -706,7 +725,7 @@ class WeaponParser(XmlParser):
         return WeaponType.from_tag(type_el.tag)
 
 
-def parse_weapons() -> List[WeaponParser]:
+def parse_weapons() -> list[WeaponParser]:
     rootdir = Path(r"xml/World/Weapons")
     return [WeaponParser(f) for f in rootdir.iterdir()]
 
@@ -716,4 +735,46 @@ def parse_weapons() -> List[WeaponParser]:
 
 class UnitParser(XmlParser):
     ROOT_TAG = "unit"
+    IMMEDIATE_TAGS = []
+    CONDITIONS = []
+
+    @property
+    def group_size(self) -> int:
+        return self._group_size
+
+    @property
+    def modifiers(self) -> tuple[Modifier, ...]:
+        return self._modifiers
+
+    @property
+    def weapons(self) -> tuple[Effect, ...]:
+        return self._weapons
+
+    @property
+    def actions(self) -> tuple[Effect, ...]:
+        return self._actions
+
+    @property
+    def traits(self) -> tuple[Effect, ...]:
+        return self._traits
+
+    @property
+    def reference(self) -> Origin | None:
+        return self._reference
+
+    def __init__(self, file: PathLike) -> None:
+        super().__init__(file)
+        if self.file.parent.name != "Units":
+            raise ValueError(f"Invalid input file: {self.file}")
+        self._reference = self.parse_reference()
+        group_el = self.root.find("group")
+        if group_el is None:
+            raise ValueError(f"no group element: {self.file}")
+        self._group_size = int(group_el.attrib["size"])
+        self._modifiers = self.parse_modifiers()
+        self._weapons = self.parse_effects(self.root, "weapons", process_sub_effects=False)
+        self._actions = self.parse_effects(self.root, "actions", process_sub_effects=False)
+        self._traits = self.parse_effects(self.root, "traits")
+
+
 

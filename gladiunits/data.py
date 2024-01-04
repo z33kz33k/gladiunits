@@ -1,7 +1,7 @@
 from enum import Enum
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Tuple, ClassVar
+from typing import Any, Literal, ClassVar, TypeAlias, Union
 
 from gladiunits.utils import from_iterable
 
@@ -65,6 +65,13 @@ class Origin:
                     category = parent.parent.name
                 else:
                     category = parent.parent.parent.name
+            # handle edge cases like '<noCooldownAction name="SerpentShield/SerpentShield"/>'
+            # in Eldar/SerpentShield.xml
+            if category == self.path.stem:
+                idx = self.path.parts.index(category)
+                if idx > 0:
+                    idx -= 1
+                    category = self.path.parts[idx]
         return category
 
     @property
@@ -82,7 +89,7 @@ class Origin:
 
     def __post_init__(self) -> None:
         if self.category not in CATEGORIES:
-            raise ValueError(f"Unknown category: {self.category!r}")
+            raise ValueError(f"unknown category: {self.category!r}")
 
 
 @dataclass(frozen=True)
@@ -100,22 +107,24 @@ class TextsMixin:
         return TextsMixin(*other.properties)
 
 
+Parsed: TypeAlias = Union["Upgrade", "Trait", "Weapon", "Unit"]
+
+
 @dataclass(frozen=True)
 class ReferenceMixin:
-    reference: Path | None  # TODO: to be resolved into actual referenced objects (if possible)
+    reference: Parsed | Origin | None
 
     @property
     def reffed_category(self) -> str | None:
-        if not self.reference:
+        if not isinstance(self.reference, Origin):
             return None
-        origin = Origin(self.reference)
-        return origin.category
+        return self.reference.category
 
 
 @dataclass(frozen=True)
 class Parameter:
-    TYPES: ClassVar[Dict[str, Any]] = {
-        'action': Path,
+    TYPES: ClassVar[dict[str, Any]] = {
+        'action': Origin,
         'add': float,
         'addMax': float,
         'addMin': float,
@@ -133,48 +142,58 @@ class Parameter:
         'mul': float,
         'mulMax': float,
         'mulMin': float,
-        'name': Path,
+        'name': Origin,
         'rank': int,
         'range': int,
-        'reference': Path,
-        'requiredUpgrade': Path,
-        'weapon': Path,
+        'reference': Origin,
+        'requiredUpgrade': Origin,
+        'weapon': Origin,
     }
     type: str
-    value: Path | float | int | str
+    value: Parsed | Origin | float | int | str | bool
 
     def __post_init__(self) -> None:
         if self.type not in self.TYPES:
-            raise TypeError(f"Unrecognized parameter type: {self.type!r}")
+            raise TypeError(f"unrecognized parameter type: {self.type!r}")
+
+    @property
+    def is_dereferenced(self) -> bool:
+        if isinstance(self.value, Origin) and self.value.category in PARSED_CATEGORIES:
+            return False
+        return True
 
 
 @dataclass(frozen=True)
 class Effect:
     name: str
-    params: Tuple[Parameter, ...]
-    sub_effects: Tuple["Effect", ...]
+    params: tuple[Parameter, ...]
+    sub_effects: tuple["Effect", ...]
 
     @property
-    def all_params(self) -> List[Parameter]:
+    def all_params(self) -> list[Parameter]:
         return [*self.params, *[p for e in self.sub_effects for p in e.all_params]]
+
+    @property
+    def is_dereferenced(self) -> bool:
+        return all(p.is_dereferenced for p in self.all_params)
+
+    @property
+    def is_negative(self) -> bool:
+        return len(self.name) > 3 and self.name.startswith("no") and self.name[2].isupper()
 
 
 @dataclass(frozen=True)
 class CategoryEffect(Effect):
     def __post_init__(self) -> None:
         if not self.is_valid(self.name):
-            raise TypeError(f"Not a category effect: {self.name!r}")
-
-    @staticmethod
-    def is_negative(name: str) -> bool:
-        if len(name) < 3:
-            return False
-        return name.startswith("no") and name[2:] in {cat[:-1] for cat in CATEGORIES}
+            raise TypeError(f"not a category effect: {self.name!r}")
 
     @classmethod
     def get_category(cls, name: str) -> str | None:
         if name == "city" or name == "noCity":
             return "Cities"
+        if name in ("self", "opponent"):
+            return "Units"
         categories = [cat[:-1].lower() for cat in CATEGORIES]
         cat = from_iterable(categories, lambda c: c in name.lower())
         if not cat:
@@ -221,22 +240,27 @@ class ModifierType(Enum):
 @dataclass(frozen=True)
 class Modifier:
     type: ModifierType
-    conditions: Tuple[Effect, ...]
-    effects: Tuple[Effect, ...]
+    conditions: tuple[Effect, ...]
+    effects: tuple[Effect, ...]
 
     @property
-    def all_effects(self) -> List[Effect]:
+    def all_effects(self) -> list[Effect]:
         return [*self.conditions, *self.effects]
 
     @property
-    def all_params(self) -> List[Parameter]:
+    def all_params(self) -> list[Parameter]:
         return [p for e in self.all_effects for p in e.all_params]
+
+    @property
+    def is_dereferenced(self) -> bool:
+        return all(p.is_dereferenced for p in self.all_params)
 
 
 @dataclass(frozen=True)
 class Area:
-    affects: Literal["Unit", "Player"]
+    affects: Literal["Unit", "Player", "Tile"]
     radius: int | None
+    exclude_radius: int | None
 
 
 @dataclass(frozen=True)
@@ -246,48 +270,69 @@ class AreaModifier(Modifier):
 
 @dataclass(frozen=True)
 class ModifiersMixin:
-    modifiers: Tuple[Modifier | AreaModifier, ...]
+    modifiers: tuple[Modifier | AreaModifier, ...]
 
     @property
-    def all_effects(self) -> List[Effect]:
+    def all_effects(self) -> list[Effect]:
         return [e for m in self.modifiers for e in m.all_effects]
 
 
 @dataclass(frozen=True)
 class Upgrade(ReferenceMixin, TextsMixin, Origin):
     tier: int
-    required_upgrades: Tuple["Upgrade", ...]
+    required_upgrades: tuple[Union["Upgrade",  Origin], ...]
     dlc: str | None
 
     def __post_init__(self) -> None:
         super().__post_init__()
         if self.category != "Upgrades":
-            raise ValueError(f"Not a path to an upgrade .xml: {self.path}")
+            raise ValueError(f"not a path to an upgrade .xml: {self.path}")
         if self.tier not in range(11):
-            raise ValueError("Tier must be an integer between 0 and 10")
+            raise ValueError("tier must be an integer between 0 and 10")
+
+    @property
+    def is_dereferenced(self) -> bool:
+        if (self.reference is not None
+                and isinstance(self.reference, Origin)
+                and self.reference.category_path in PARSED_CATEGORIES):
+            return False
+        return all(isinstance(u, Upgrade) for u in self.required_upgrades)
 
 
 @dataclass(frozen=True)
 class Trait(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
     type: Literal["Buff", "Debuff"] | None
-    target_conditions: Tuple[Effect, ...]
+    target_conditions: tuple[Effect, ...]
     max_rank: int | None
     stacking: bool | None
 
     def __post_init__(self) -> None:
         super().__post_init__()
         if self.category != "Traits":
-            raise ValueError(f"Not a path to a trait .xml: {self.path}")
+            raise ValueError(f"not a path to a trait .xml: {self.path}")
 
     @property
-    def all_effects(self) -> List[Effect]:  # override
+    def all_effects(self) -> list[Effect]:  # override
         return [*self.target_conditions, *super().all_effects]
+
+    @property
+    def is_dereferenced(self) -> bool:
+        if (self.reference is not None
+                and isinstance(self.reference, Origin)
+                and self.reference.category_path in PARSED_CATEGORIES):
+            return False
+        return all(m.is_dereferenced for m in self.modifiers) and all(
+            tc.is_dereferenced for tc in self.target_conditions)
 
 
 @dataclass(frozen=True)
 class Target:
     max_range: int
-    conditions: Tuple[Effect, ...]
+    conditions: tuple[Effect, ...]
+
+    @property
+    def is_dereferenced(self) -> bool:
+        return all(c.is_dereferenced for c in self.conditions)
 
 
 class WeaponType(Enum):
@@ -310,51 +355,51 @@ class WeaponType(Enum):
 
 
 @dataclass(frozen=True)
-class Weapon(ModifiersMixin, TextsMixin, Origin):
+class Weapon(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
     type: WeaponType
     target: Target | None
-    traits: Tuple[CategoryEffect, ...]
+    traits: tuple[CategoryEffect, ...]
 
     def __post_init__(self) -> None:
         super().__post_init__()
         if self.category != "Weapons":
-            raise ValueError(f"Not a path to a weapon .xml: {self.path}")
-
-
-@dataclass(frozen=True)
-class Action:
-    weapon: Weapon | None
-    cooldown: int | None
-    required_upgrade: Upgrade | None
-
-    def __post_init__(self) -> None:
-        if self.cooldown and self.cooldown < 0:
-            raise ValueError("Cooldown must not be negative")
-
-
-@dataclass(frozen=True)
-class Unit(ModifiersMixin, TextsMixin, Origin):
-    armor: int
-    hitpoints: float
-    movement: int
-    morale: int
-    melee_accuracy: int
-    melee_attacks: int
-    ranged_accuracy: int
-    ranged_attacks: int
-    production_cost: float
-    requisitions_upkeep: float
-    requisitions_cost: float
-    group_size: int
-    weapons: Tuple[Weapon, ...]
-    actions: Tuple[Action, ...]
-    traits: Tuple[Trait, ...]
+            raise ValueError(f"not a path to a weapon .xml: {self.path}")
 
     @property
-    def total_hitpoints(self) -> float:
-        return self.hitpoints * self.group_size
+    def is_dereferenced(self) -> bool:
+        if (self.reference is not None
+                and isinstance(self.reference, Origin)
+                and self.reference.category_path in PARSED_CATEGORIES):
+            return False
+        if self.target is not None and not self.target.is_dereferenced:
+            return False
+        return all(m.is_dereferenced for m in self.modifiers) and all(
+            t.is_dereferenced for t in self.traits)
 
+
+@dataclass(frozen=True)
+class Unit(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
+    group_size: int
+    modifiers: tuple[Modifier, ...]
+    weapons: tuple[CategoryEffect, ...]
+    # TODO: parse action modifiers, targets (extend Weapon target parsing)
+    actions: tuple[CategoryEffect, ...]
+    traits: tuple[CategoryEffect, ...]
+
+    # @property
+    # def total_hitpoints(self) -> float:
+    #     return self.hitpoints * self.group_size
+    #
     def __post_init__(self) -> None:
         super().__post_init__()
         if self.category != "Units":
-            raise ValueError(f"Not a path to an unit .xml: {self.path}")
+            raise ValueError(f"not a path to an unit .xml: {self.path}")
+
+    @property
+    def is_dereferenced(self) -> bool:
+        if (self.reference is not None
+                and isinstance(self.reference, Origin)
+                and self.reference.category_path in PARSED_CATEGORIES):
+            return False
+        return all(m.is_dereferenced for m in self.modifiers) and all(
+            e.is_dereferenced for e in (*self.weapons, *self.actions, *self.traits))
