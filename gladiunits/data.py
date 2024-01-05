@@ -128,7 +128,8 @@ class Parameter:
         'add': float,
         'addMax': float,
         'addMin': float,
-        'base': int,
+        'base': float,
+        'consumedActionPoints': int,
         'count': int,
         'duration': int,
         'equal': float,
@@ -143,6 +144,7 @@ class Parameter:
         'mulMax': float,
         'mulMin': float,
         'name': Origin,
+        'passive': bool,
         'rank': int,
         'range': int,
         'reference': Origin,
@@ -321,18 +323,21 @@ class Trait(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
                 and isinstance(self.reference, Origin)
                 and self.reference.category_path in PARSED_CATEGORIES):
             return False
-        return all(m.is_dereferenced for m in self.modifiers) and all(
-            tc.is_dereferenced for tc in self.target_conditions)
+        return all(item.is_dereferenced for item in (*self.modifiers, *self.target_conditions))
 
 
 @dataclass(frozen=True)
 class Target:
-    max_range: int
+    is_self_target: bool
+    max_range: int | None
+    min_range: int | None
+    line_of_sight: int | None
     conditions: tuple[Effect, ...]
+    modifiers: tuple[Modifier, ...]
 
     @property
     def is_dereferenced(self) -> bool:
-        return all(c.is_dereferenced for c in self.conditions)
+        return all(item.is_dereferenced for item in (*self.conditions, *self.modifiers))
 
 
 class WeaponType(Enum):
@@ -373,8 +378,26 @@ class Weapon(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
             return False
         if self.target is not None and not self.target.is_dereferenced:
             return False
-        return all(m.is_dereferenced for m in self.modifiers) and all(
-            t.is_dereferenced for t in self.traits)
+        return all(item.is_dereferenced for item in (*self.modifiers, *self.traits))
+
+
+@dataclass(frozen=True)
+class Action(ReferenceMixin):
+    name: str
+    params: tuple[Parameter, ...]
+    texts: TextsMixin | None
+    modifiers: tuple[Modifier, ...]
+    conditions: tuple[Effect, ...]
+    targets: tuple[Target, ...]
+
+    @property
+    def is_dereferenced(self) -> bool:
+        if (self.reference is not None
+                and isinstance(self.reference, Origin)
+                and self.reference.category_path in PARSED_CATEGORIES):
+            return False
+        return all(item.is_dereferenced for item
+                   in (*self.params, *self.modifiers, *self.conditions, *self.targets))
 
 
 @dataclass(frozen=True)
@@ -382,8 +405,7 @@ class Unit(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
     group_size: int
     modifiers: tuple[Modifier, ...]
     weapons: tuple[CategoryEffect, ...]
-    # TODO: parse action modifiers, targets (extend Weapon target parsing)
-    actions: tuple[CategoryEffect, ...]
+    actions: tuple[Action, ...]
     traits: tuple[CategoryEffect, ...]
 
     # @property
@@ -401,5 +423,5 @@ class Unit(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
                 and isinstance(self.reference, Origin)
                 and self.reference.category_path in PARSED_CATEGORIES):
             return False
-        return all(m.is_dereferenced for m in self.modifiers) and all(
-            e.is_dereferenced for e in (*self.weapons, *self.actions, *self.traits))
+        return all(item.is_dereferenced for item
+                   in (*self.modifiers, *self.weapons, *self.actions, *self.traits))
