@@ -1,3 +1,4 @@
+import os
 import re
 from collections import deque
 from pathlib import Path
@@ -290,6 +291,10 @@ class XmlParser(FileParser):
             value = int(value)
         elif value_type is Origin:
             value = Path(value)
+        elif isinstance(value_type, tuple):  # weaponSlotNames case (collection of origins)
+            attr_category = CategoryEffect.get_category(attr)
+            category = attr_category if attr_category else category
+            return Parameter(attr, tuple(Origin(Path(category) / v) for v in value.split()))
         return Parameter(attr, value_type(value))
 
     @classmethod
@@ -361,7 +366,7 @@ class XmlParser(FileParser):
         line_of_sight = cls.get_value_from_attr(target_el, "lineOfSight", int)
         conditions = cls.parse_effects(target_el, "conditions")
         modifiers = cls.parse_modifiers(target_el)
-        return Target(is_self_target, max_range, min_range, line_of_sight, conditions, modifiers)
+        return Target(modifiers, is_self_target, max_range, min_range, line_of_sight, conditions)
 
     @staticmethod
     def get_value(element: Element | None, xpath: str, value_type: T) -> T | None:
@@ -815,7 +820,17 @@ class _ActionSubParser:
         path = self.root.attrib.get("name")
         if not path:
             return None
-        return get_texts(Origin(Path(path)))
+        try:
+            return get_texts(Origin(Path("Actions") / path))
+        except KeyError:
+            try:
+                return get_texts(Origin(Path("Traits") / path))
+            except KeyError:
+                if any("weapon" in attr for attr in self.root.attrib):
+                    if "/" in path:
+                        faction, name = path.split("/")
+                        return get_texts(Origin(Path("Weapons") / name))
+                return None
 
     def _parse_targets(self) -> tuple[Target, ...]:
         root = self.root.find("beginTargets")
@@ -824,13 +839,21 @@ class _ActionSubParser:
         return tuple(XmlParser.parse_target(el) for el in root)
 
     def to_action(self) -> Action:
-        return Action(self.reference, self.name, self.params, self.texts, self.modifiers,
+        return Action(self.reference, self.modifiers, self.name, self.params, self.texts,
                       self.conditions, self.targets)
 
 
 class UnitParser(XmlParser):
     ROOT_TAG = "unit"
-    IMMEDIATE_TAGS = []
+    IMMEDIATE_TAGS = [
+        'actions',
+        'group',
+        'model',
+        'modifiers',
+        'strategyModifiers',
+        'traits',
+        'weapons'
+    ]
     CONDITIONS = []
 
     @property
@@ -859,7 +882,8 @@ class UnitParser(XmlParser):
 
     def __init__(self, file: PathLike) -> None:
         super().__init__(file)
-        if self.file.parent.parent.name != "Units":
+        if (self.file.parent.parent.name != "Units"
+                and self.file.parent.parent.parent.name != "Units"):
             raise ValueError(f"Invalid input file: {self.file}")
         self._reference = self.parse_reference(self.root)
         group_el = self.root.find("group")
@@ -872,5 +896,5 @@ class UnitParser(XmlParser):
 
 def parse_untis() -> list[UnitParser]:
     rootdir = Path(r"xml/World/Units")
-    return [UnitParser(f) for dir_ in rootdir.iterdir() for f in dir_.iterdir()]
+    return [UnitParser(Path(dir_) / f) for dir_, _, files in os.walk(rootdir) for f in files]
 

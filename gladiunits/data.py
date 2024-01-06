@@ -129,12 +129,32 @@ class Parameter:
         'addMax': float,
         'addMin': float,
         'base': float,
-        'consumedActionPoints': int,
+        'beginOnDisappear': bool,
+        'charges': int,
+        'consumedAction': bool,
+        'consumedActionPoints': bool,
+        'consumedMovement': bool,
+        'cooldown': int,
+        'cooldownMin': int,
+        'cooldownMax': int,
+        'cooldownRemaining': int,
+        'cooldownScalesWithPace': bool,
+        'costScalesWithPace': bool,
         'count': int,
+        'countMax': int,
+        'disableable': bool,
         'duration': int,
+        'durationMin': int,
+        'durationMax': int,
+        'elite': bool,
+        'enabled': bool,
         'equal': float,
         'greater': float,
+        'interfaceSound': str,
         'less': float,
+        'levelMin': int,
+        'levelMax': int,
+        'levelUpPriority': float,
         'match': str,
         'max': float,
         'min': float,
@@ -145,14 +165,28 @@ class Parameter:
         'mulMin': float,
         'name': Origin,
         'passive': bool,
+        'psychicPower': bool,
+        'radius': int,
         'rank': int,
+        'rankMax': int,
         'range': int,
         'reference': Origin,
+        'removeOnSourceDeath': bool,
+        'requiredActionPoints': bool,
+        'requiredMovement': bool,
         'requiredUpgrade': Origin,
+        'shoutString': Origin,
+        'slotName': str,
+        'unit': Origin,
+        'unitType': Origin,
+        'usableInTransport': bool,
+        'visible': bool,
         'weapon': Origin,
+        'weaponSlotName': Origin,
+        'weaponSlotNames': (tuple, Origin),
     }
     type: str
-    value: Parsed | Origin | float | int | str | bool
+    value: Parsed | tuple[Parsed, ...] | Origin | tuple[Origin, ...] | float | int | str | bool
 
     def __post_init__(self) -> None:
         if self.type not in self.TYPES:
@@ -161,6 +195,9 @@ class Parameter:
     @property
     def is_dereferenced(self) -> bool:
         if isinstance(self.value, Origin) and self.value.category in PARSED_CATEGORIES:
+            return False
+        if isinstance(self.value, tuple) and any(
+                isinstance(v, Origin) and v.category in PARSED_CATEGORIES for v in self.value):
             return False
         return True
 
@@ -327,17 +364,20 @@ class Trait(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
 
 
 @dataclass(frozen=True)
-class Target:
+class Target(ModifiersMixin):
     is_self_target: bool
     max_range: int | None
     min_range: int | None
     line_of_sight: int | None
     conditions: tuple[Effect, ...]
-    modifiers: tuple[Modifier, ...]
 
     @property
     def is_dereferenced(self) -> bool:
         return all(item.is_dereferenced for item in (*self.conditions, *self.modifiers))
+
+    @property
+    def all_effects(self) -> list[Effect]:  # override
+        return [*self.conditions, *super().all_effects]
 
 
 class WeaponType(Enum):
@@ -380,13 +420,16 @@ class Weapon(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
             return False
         return all(item.is_dereferenced for item in (*self.modifiers, *self.traits))
 
+    @property
+    def all_effects(self) -> list[Effect]:  # override
+        return [*super().all_effects, *self.target.all_effects, *self.traits]
+
 
 @dataclass(frozen=True)
-class Action(ReferenceMixin):
+class Action(ModifiersMixin, ReferenceMixin):
     name: str
     params: tuple[Parameter, ...]
     texts: TextsMixin | None
-    modifiers: tuple[Modifier, ...]
     conditions: tuple[Effect, ...]
     targets: tuple[Target, ...]
 
@@ -399,11 +442,15 @@ class Action(ReferenceMixin):
         return all(item.is_dereferenced for item
                    in (*self.params, *self.modifiers, *self.conditions, *self.targets))
 
+    @property
+    def all_effects(self) -> list[Effect]:  # override
+        target_effects = [t.all_effects for t in self.targets]
+        return [*super().all_effects, *self.conditions, *target_effects]
+
 
 @dataclass(frozen=True)
 class Unit(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
     group_size: int
-    modifiers: tuple[Modifier, ...]
     weapons: tuple[CategoryEffect, ...]
     actions: tuple[Action, ...]
     traits: tuple[CategoryEffect, ...]
@@ -425,3 +472,9 @@ class Unit(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
             return False
         return all(item.is_dereferenced for item
                    in (*self.modifiers, *self.weapons, *self.actions, *self.traits))
+
+    @property
+    def all_effects(self) -> list[Effect]:  # override
+        action_effects = [a.all_effects for a in self.actions]
+        return [*super().all_effects, *self.weapons, *action_effects, *self.traits]
+
