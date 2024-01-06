@@ -1,3 +1,4 @@
+from collections import OrderedDict, defaultdict
 from enum import Enum
 from dataclasses import dataclass
 from pathlib import Path
@@ -517,6 +518,14 @@ class Unit(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
     @property
     def morale(self) -> int:
         return self._get_key_property("moraleMax", int)
+
+
+def get_mod_effects(objects: list[Parsed | Action]) -> OrderedDict[str, list[Parsed | Action]]:
+    effects_map = defaultdict(list)
+    for obj in objects:
+        for e in {e.name for m in obj.modifiers for e in m.effects}:
+            effects_map[e].append(obj)
+    return OrderedDict(sorted((k, v) for k, v in effects_map.items()))
 
 
 def get_obj(objects: list[Parsed | Action], name: str) -> Parsed | Action | None:
