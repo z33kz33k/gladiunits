@@ -58,6 +58,8 @@ class Origin:
         parent = self.path.parent
         if parent.name in FACTIONS:
             category = parent.parent.name
+        elif parent.parent.name in FACTIONS:
+            category = parent.parent.parent.name
         else:
             category = parent.name
             if category == "Artefacts":
@@ -65,6 +67,8 @@ class Origin:
                     category = parent.parent.name
                 else:
                     category = parent.parent.parent.name
+            elif category == "Items" and parent.parent.name == "Traits":
+                category = "Traits"
             # handle edge cases like '<noCooldownAction name="SerpentShield/SerpentShield"/>'
             # in Eldar/SerpentShield.xml
             if category == self.path.stem:
@@ -84,7 +88,7 @@ class Origin:
         return Path(*self.path.parts[idx:-1], self.path.stem)
 
     @property
-    def name(self) -> str:
+    def stem(self) -> str:
         return str(Path(*self.category_path.parts[1:]))
 
     def __post_init__(self) -> None:
@@ -97,14 +101,6 @@ class TextsMixin:
     name: str
     description: str | None
     flavor: str | None
-
-    @property
-    def properties(self) -> tuple:
-        return self.name, self.description, self.flavor
-
-    @staticmethod
-    def from_other(other: "TextsMixin") -> "TextsMixin":
-        return TextsMixin(*other.properties)
 
 
 Parsed: TypeAlias = Union["Upgrade", "Trait", "Weapon", "Unit"]

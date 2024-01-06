@@ -2,15 +2,15 @@ import os
 import re
 from collections import deque
 from pathlib import Path
-from typing import Type
 
 import lxml
 from lxml.etree import XMLSyntaxError, _Element as Element
 
 from gladiunits.constants import PathLike, T
-from gladiunits.data import Action, Area, AreaModifier, Modifier, Origin, Parameter, Target, \
-    TextsMixin, \
-    CATEGORIES, FACTIONS, Effect, CategoryEffect, ModifierType, WeaponType
+from gladiunits.data import (Action, Area, AreaModifier, Modifier, Origin, Parameter, Target,
+                             TextsMixin, CATEGORIES, FACTIONS, Effect, CategoryEffect, ModifierType,
+                             Trait, Unit, Upgrade,
+                             Weapon, WeaponType)
 from gladiunits.utils import from_iterable
 
 
@@ -394,14 +394,13 @@ class UpgradeParser(XmlParser):
     interest for this project.
     """
     ROOT_TAG = "upgrade"
-    IMMEDIATE_TAGS = ['requiredUpgrades', 'strategyModifiers']
 
     @property
     def tier(self) -> int:
         return self._tier
 
     @property
-    def required_upgrades(self) -> tuple[CategoryEffect, ...]:
+    def required_upgrades(self) -> tuple[Origin, ...]:
         return self._required_upgrades
 
     @property
@@ -420,17 +419,32 @@ class UpgradeParser(XmlParser):
         self._reference = self.parse_reference(self.root)
         self._tier = self.root.attrib.get("position")
         self._tier = int(self._tier) if self._tier else 0
-        self._required_upgrades = self.parse_effects(self.root, "requiredUpgrades")
+        self._required_upgrades = tuple(
+            Origin(Path("Upgrades") / el.attrib["name"]) for el in self.root.findall(
+                "requiredUpgrades/upgrade"))
         self._dlc = self.root.attrib.get("dlc")
         if self._dlc:
             self._dlc = DISPLAYED_TEXTS.get(str(Path("WorldParameters") / self._dlc))
 
+    def to_upgrade(self) -> Upgrade:
+        return Upgrade(
+            self.origin.path,
+            self.texts.name,
+            self.texts.description,
+            self.texts.flavor,
+            self.reference,
+            self.tier,
+            self.required_upgrades,
+            self.dlc
+        )
 
-def parse_upgrades() -> list[UpgradeParser]:
+
+def parse_upgrades() -> list[Upgrade]:
     # required correcting a malformed original file:
     # Upgrades/Tau/RipykaVa.xml (doubly defined 'icon' attribute)
     rootdir = Path(r"xml/World/Upgrades")
-    return [UpgradeParser(f) for p in rootdir.iterdir() if p.is_dir() for f in p.iterdir()]
+    return [UpgradeParser(f).to_upgrade() for p in rootdir.iterdir()
+            if p.is_dir() for f in p.iterdir()]
 
 
 class TraitParser(XmlParser):
@@ -514,144 +528,6 @@ class TraitParser(XmlParser):
     </trait>
     """
     ROOT_TAG = "trait"
-    IMMEDIATE_TAGS = [
-        'areas',
-        'modifiers',
-        'onCombatOpponentModifiers',
-        'onCombatSelfModifiers',
-        'onEnemyKilledOpponentTileModifiers',
-        'onEnemyKilledSelf',
-        'onEnemyKilledSelfModifiers',
-        'onTileEnteredModifiers',
-        'onTraitAddedModifiers',
-        'onTraitRemovedModifiers',
-        'onTransportDisembarked',
-        'onTransportEmbarked',
-        'onUnitDisappeared',
-        'onUnitDisappearedModifiers',
-        'onUnitDisembarked',
-        'opponentModifiers',
-        'perTurnModifiers',
-        'targetConditions'
-    ]
-    EFFECTS = [
-        'accuracy',
-        'actionPointsMax',
-        'addFeature',
-        'addRandomBoonOfChaos',
-        'addTrait',
-        'addUnit',
-        'additionalMembersHit',
-        'armor',
-        'armorPenetration',
-        'attacks',
-        'attacksTaken',
-        'biomassUpkeep',
-        'boonOfChaosChance',
-        'cargoSlotsRequired',
-        'circumstanceMeleeDamage',
-        'cityDamageReduction',
-        'cityRadius',
-        'consumedMovement',
-        'damage',
-        'damageFromHitpoints',
-        'damageReturnFactor',
-        'damageSelfFactor',
-        'damageTaken',
-        'deathExperience',
-        'deathMorale',
-        'duplicateTypeCost',
-        'energy',
-        'energyFromAdjacentBuildings',
-        'energyFromExperienceValueFactor',
-        'energyUpkeep',
-        'feelNoPainDamageReduction',
-        'flatResourcesFromFeatures',
-        'food',
-        'foodFromAdjacentBuildings',
-        'foodUpkeep',
-        'growth',
-        'healingRate',
-        'heroDamageReduction',
-        'hitpoints',
-        'hitpointsFactorFromMax',
-        'hitpointsMax',
-        'ignoreLineOfSight',
-        'ignoreZoneOfControl',
-        'influence',
-        'influenceFromAdjacentBuildings',
-        'influencePerCombatFromUpkeepFactor',
-        'influencePerExperience',
-        'influencePerKillValue',
-        'influenceUpkeep',
-        'invulnerableDamageReduction',
-        'lifeStealFactor',
-        'lifeStealRadius',
-        'loyalty',
-        'loyaltyFromAdjacentBuildings',
-        'loyaltyFromUtopiaType',
-        'loyaltyPerCity',
-        'meleeAccuracy',
-        'meleeArmorPenetration',
-        'meleeAttacks',
-        'meleeDamage',
-        'meleeDamageReduction',
-        'meleeOverwatch',
-        'minDamageFromHitpointsFraction',
-        'monolithicBuildingsBonus',
-        'monolithicBuildingsPenalty',
-        'morale',
-        'moraleLossFactor',
-        'moraleLossFactorPerAllyInArea',
-        'moraleMax',
-        'moraleRegeneration',
-        'movement',
-        'movementCost',
-        'movementMax',
-        'opponentRangedAccuracy',
-        'ore',
-        'oreFromAdjacentBuildings',
-        'orePerKillValue',
-        'oreUpkeep',
-        'populationLimit',
-        'preventEnemyOverwatch',
-        'preventOverwatch',
-        'processUse',
-        'production',
-        'productionFromAdjacentBuildings',
-        'rangeMax',
-        'rangedAccuracy',
-        'rangedArmorPenetration',
-        'rangedAttacks',
-        'rangedDamageReduction',
-        'rangedDamageReductionBypass',
-        'rangedInvulnerableDamageReduction',
-        'removeFeature',
-        'removeTrait',
-        'removeUnit',
-        'requisitions',
-        'requisitionsUpkeep',
-        'research',
-        'researchCost',
-        'researchFromAdjacentBuildings',
-        'researchPerExperience',
-        'researchPerKillValue',
-        'sight',
-        'supportSystemSlots',
-        'typeLimit',
-        'weaponDamage',
-        'witchfireDamageReduction'
-    ]
-    CONDITIONS = [
-        'building',
-        'encounter',
-        'encounterRange',
-        'player',
-        'supportingFire',
-        'tile',
-        'unit',
-        'weapon'
-    ]
 
     @property
     def type(self) -> str | None:
@@ -701,8 +577,22 @@ class TraitParser(XmlParser):
                 conditions.append(self.to_effect(sub_el))
         return tuple(conditions)
 
+    def to_trait(self) -> Trait:
+        return Trait(
+            self.origin.path,
+            self.texts.name,
+            self.texts.description,
+            self.texts.flavor,
+            self.reference,
+            self.modifiers,
+            self.type,
+            self.target_conditions,
+            self.max_rank,
+            self.stacking
+        )
 
-def parse_traits() -> list[TraitParser]:
+
+def parse_traits() -> list[Trait]:
     # required correcting a malformed original file:
     # Traits/ChaosSpaceMarines/RunesOfTheBloodGod.xml (missing whitespace)
     rootdir = Path(r"xml/World/Traits")
@@ -711,7 +601,7 @@ def parse_traits() -> list[TraitParser]:
     traits = []
     for f in [*flat, *nested]:
         try:
-            traits.append(TraitParser(f))
+            traits.append(TraitParser(f).to_trait())
         except XMLSyntaxError:
             pass  # Traits/OrkoidFungusFood.xml (the body commented out)
     return traits
@@ -719,8 +609,6 @@ def parse_traits() -> list[TraitParser]:
 
 class WeaponParser(XmlParser):
     ROOT_TAG = "weapon"
-    IMMEDIATE_TAGS = ['model', 'modifiers', 'target', 'traits']
-    CONDITIONS = ['encounter']
 
     @property
     def modifiers(self) -> tuple[Modifier, ...]:
@@ -767,10 +655,23 @@ class WeaponParser(XmlParser):
             return None
         return self.parse_target(target_el)
 
+    def to_weapon(self) -> Weapon:
+        return Weapon(
+            self.origin.path,
+            self.texts.name,
+            self.texts.description,
+            self.texts.flavor,
+            self.reference,
+            self.modifiers,
+            self.type,
+            self.target,
+            self.traits
+        )
 
-def parse_weapons() -> list[WeaponParser]:
+
+def parse_weapons() -> list[Weapon]:
     rootdir = Path(r"xml/World/Weapons")
-    return [WeaponParser(f) for f in rootdir.iterdir()]
+    return [WeaponParser(f).to_weapon() for f in rootdir.iterdir()]
 
 
 class _ActionSubParser:
@@ -845,16 +746,6 @@ class _ActionSubParser:
 
 class UnitParser(XmlParser):
     ROOT_TAG = "unit"
-    IMMEDIATE_TAGS = [
-        'actions',
-        'group',
-        'model',
-        'modifiers',
-        'strategyModifiers',
-        'traits',
-        'weapons'
-    ]
-    CONDITIONS = []
 
     @property
     def group_size(self) -> int:
@@ -893,8 +784,23 @@ class UnitParser(XmlParser):
         self._actions = tuple(_ActionSubParser(el).to_action() for el in self.root.find("actions"))
         self._traits = self.parse_effects(self.root, "traits")
 
+    def to_unit(self) -> Unit:
+        return Unit(
+            self.origin.path,
+            self.texts.name,
+            self.texts.description,
+            self.texts.flavor,
+            self.reference,
+            self.modifiers,
+            self.group_size,
+            self.weapons,
+            self.actions,
+            self.traits
+        )
 
-def parse_untis() -> list[UnitParser]:
+
+def parse_untis() -> list[Unit]:
     rootdir = Path(r"xml/World/Units")
-    return [UnitParser(Path(dir_) / f) for dir_, _, files in os.walk(rootdir) for f in files]
+    return [UnitParser(Path(dir_) / f).to_unit() for dir_, _, files
+            in os.walk(rootdir) for f in files]
 
