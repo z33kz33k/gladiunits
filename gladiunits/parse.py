@@ -799,7 +799,7 @@ class UnitParser(XmlParser):
         )
 
 
-def parse_untis() -> list[Unit]:
+def parse_units() -> list[Unit]:
     rootdir = Path(r"xml/World/Units")
     return [UnitParser(Path(dir_) / f).to_unit() for dir_, _, files
             in os.walk(rootdir) for f in files]

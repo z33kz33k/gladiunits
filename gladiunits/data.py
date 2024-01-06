@@ -1,7 +1,7 @@
 from enum import Enum
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, ClassVar, TypeAlias, Union
+from typing import Any, Literal, ClassVar, Type, TypeAlias, Union
 
 from gladiunits.utils import from_iterable
 
@@ -104,6 +104,8 @@ class TextsMixin:
 
 
 Parsed: TypeAlias = Union["Upgrade", "Trait", "Weapon", "Unit"]
+ParamValue: TypeAlias = (Parsed | tuple[Parsed, ...] | Origin | tuple[Origin, ...] | float | int |
+                         str | bool)
 
 
 @dataclass(frozen=True)
@@ -182,12 +184,14 @@ class Parameter:
         'weaponSlotNames': (tuple, Origin),
     }
     type: str
-    value: Parsed | tuple[Parsed, ...] | Origin | tuple[Origin, ...] | float | int | str | bool
+    value: ParamValue
 
     def __post_init__(self) -> None:
         if self.type not in self.TYPES:
             raise TypeError(f"unrecognized parameter type: {self.type!r}")
 
+    # TODO: implement this in higher-level classes as a collection of unresolved_references (
+    #  first and boolean second) and rename to 'is_unresolved'
     @property
     def is_dereferenced(self) -> bool:
         if isinstance(self.value, Origin) and self.value.category in PARSED_CATEGORIES:
@@ -310,6 +314,10 @@ class ModifiersMixin:
     @property
     def all_effects(self) -> list[Effect]:
         return [e for m in self.modifiers for e in m.all_effects]
+
+    @property
+    def mod_effects(self) -> list[Effect]:
+        return [e for m in self.modifiers for e in m.effects]
 
 
 @dataclass(frozen=True)
@@ -443,6 +451,11 @@ class Action(ModifiersMixin, ReferenceMixin):
         target_effects = [t.all_effects for t in self.targets]
         return [*super().all_effects, *self.conditions, *target_effects]
 
+    @property
+    def is_simple(self) -> bool:
+        return all(
+            not item for item in (self.params, self.modifiers, self.conditions, self.targets))
+
 
 @dataclass(frozen=True)
 class Unit(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
@@ -473,4 +486,52 @@ class Unit(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
     def all_effects(self) -> list[Effect]:  # override
         action_effects = [a.all_effects for a in self.actions]
         return [*super().all_effects, *self.weapons, *action_effects, *self.traits]
+
+    @property
+    def elaborate_actions(self) -> list[Action]:
+        return [a for a in self.actions if not a.is_simple]
+
+    def _get_key_property(self, name: str, convert_to: Type | None = None) -> ParamValue | None:
+        effect = from_iterable(self.mod_effects, lambda e: e.name == name)
+        if not effect:
+            return None
+        param = from_iterable(effect.params, lambda p: p.type in ("base", "max"))
+        value = param.value if param else None
+        if convert_to and value is not None:
+            return convert_to(value)
+        return value
+
+    # key properties
+    @property
+    def armor(self) -> int | None:
+        return self._get_key_property("armor", int)
+
+    @property
+    def hitpoints(self) -> int | None:
+        return self._get_key_property("hitpointsMax", int)
+
+    @property
+    def total_hitpoints(self) -> int | None:
+        return self.group_size * self.hitpoints if self.hitpoints is not None else None
+
+    @property
+    def morale(self) -> int:
+        return self._get_key_property("moraleMax", int)
+
+
+def get_obj(objects: list[Parsed | Action], name: str) -> Parsed | Action | None:
+    return from_iterable(objects, lambda o: o.name == name)
+
+
+def get_objects(objects: list[Parsed | Action], *names: str) -> list[Parsed | Action | None]:
+    d = {n: i for i, n in enumerate(names)}
+    retrieved = []
+    for obj in objects:
+        if obj.name in names:
+            retrieved.append((obj, d[obj.name]))
+    for name in names:  # match number of outputs with number of inputs
+        if name not in {r.name for r, _ in retrieved}:
+            retrieved.append((None, d[name]))
+    retrieved.sort(key=lambda r: r[1])    # preserve the input order
+    return [r[0] for r in retrieved]
 
