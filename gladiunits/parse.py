@@ -1,3 +1,12 @@
+"""
+
+    gladiunits.parse.py
+    ~~~~~~~~~~~~~~~~~~~
+    Parse the game XMLs.
+
+    @author: z33k
+
+"""
 import os
 import re
 from collections import deque

@@ -1,3 +1,12 @@
+"""
+
+    gladiunits.data.py
+    ~~~~~~~~~~~~~~~~~~
+    Data structures.
+
+    @author: z33k
+
+"""
 from collections import OrderedDict, defaultdict
 from enum import Enum
 from dataclasses import dataclass
@@ -96,6 +105,9 @@ class Origin:
         if self.category not in CATEGORIES:
             raise ValueError(f"unknown category: {self.category!r}")
 
+    def __str__(self) -> str:
+        return str(self.path)
+
 
 @dataclass(frozen=True)
 class TextsMixin:
@@ -191,10 +203,8 @@ class Parameter:
         if self.type not in self.TYPES:
             raise TypeError(f"unrecognized parameter type: {self.type!r}")
 
-    # TODO: implement this in higher-level classes as a collection of unresolved_references (
-    #  first and boolean second) and rename to 'is_unresolved'
     @property
-    def is_dereferenced(self) -> bool:
+    def is_resolved(self) -> bool:
         if isinstance(self.value, Origin) and self.value.category in PARSED_CATEGORIES:
             return False
         if isinstance(self.value, tuple) and any(
@@ -214,8 +224,12 @@ class Effect:
         return [*self.params, *[p for e in self.sub_effects for p in e.all_params]]
 
     @property
-    def is_dereferenced(self) -> bool:
-        return all(p.is_dereferenced for p in self.all_params)
+    def references(self) -> list[Origin]:
+        return sorted([p.value for p in self.all_params if not p.is_resolved], key=str)
+
+    @property
+    def is_resolved(self) -> bool:
+        return not self.references
 
     @property
     def is_negative(self) -> bool:
@@ -292,8 +306,12 @@ class Modifier:
         return [p for e in self.all_effects for p in e.all_params]
 
     @property
-    def is_dereferenced(self) -> bool:
-        return all(p.is_dereferenced for p in self.all_params)
+    def references(self) -> list[Origin]:
+        return sorted([p.value for p in self.all_params if not p.is_resolved], key=str)
+
+    @property
+    def is_resolved(self) -> bool:
+        return all(p.is_resolved for p in self.all_params)
 
 
 @dataclass(frozen=True)
@@ -320,6 +338,15 @@ class ModifiersMixin:
     def mod_effects(self) -> list[Effect]:
         return [e for m in self.modifiers for e in m.effects]
 
+    @property
+    def references(self) -> list[Origin]:
+        return sorted(
+            [p.value for e in self.all_effects for p in e.all_params if not p.is_resolved], key=str)
+
+    @property
+    def is_resolved(self) -> bool:
+        return not self.references
+
 
 @dataclass(frozen=True)
 class Upgrade(ReferenceMixin, TextsMixin, Origin):
@@ -335,12 +362,18 @@ class Upgrade(ReferenceMixin, TextsMixin, Origin):
             raise ValueError("tier must be an integer between 0 and 10")
 
     @property
-    def is_dereferenced(self) -> bool:
+    def references(self) -> list[Origin]:
+        refs = []
         if (self.reference is not None
                 and isinstance(self.reference, Origin)
                 and self.reference.category_path in PARSED_CATEGORIES):
-            return False
-        return all(isinstance(u, Upgrade) for u in self.required_upgrades)
+            refs.append(self.reference)
+        return sorted(
+            [*refs, *[u for u in self.required_upgrades if isinstance(u, Origin)]], key=str)
+
+    @property
+    def is_resolved(self) -> bool:
+        return not self.references
 
 
 @dataclass(frozen=True)
@@ -360,12 +393,13 @@ class Trait(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
         return [*self.target_conditions, *super().all_effects]
 
     @property
-    def is_dereferenced(self) -> bool:
+    def references(self) -> list[Origin]:  # override
+        refs = []
         if (self.reference is not None
                 and isinstance(self.reference, Origin)
                 and self.reference.category_path in PARSED_CATEGORIES):
-            return False
-        return all(item.is_dereferenced for item in (*self.modifiers, *self.target_conditions))
+            refs.append(self.reference)
+        return sorted([*refs, *super().references], key=str)
 
 
 @dataclass(frozen=True)
@@ -375,10 +409,6 @@ class Target(ModifiersMixin):
     min_range: int | None
     line_of_sight: int | None
     conditions: tuple[Effect, ...]
-
-    @property
-    def is_dereferenced(self) -> bool:
-        return all(item.is_dereferenced for item in (*self.conditions, *self.modifiers))
 
     @property
     def all_effects(self) -> list[Effect]:  # override
@@ -416,18 +446,18 @@ class Weapon(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
             raise ValueError(f"not a path to a weapon .xml: {self.path}")
 
     @property
-    def is_dereferenced(self) -> bool:
+    def all_effects(self) -> list[Effect]:  # override
+        target_effects = self.target.all_effects if self.target else []
+        return [*super().all_effects, *self.traits] + target_effects
+
+    @property
+    def references(self) -> list[Origin]:  # override
+        refs = []
         if (self.reference is not None
                 and isinstance(self.reference, Origin)
                 and self.reference.category_path in PARSED_CATEGORIES):
-            return False
-        if self.target is not None and not self.target.is_dereferenced:
-            return False
-        return all(item.is_dereferenced for item in (*self.modifiers, *self.traits))
-
-    @property
-    def all_effects(self) -> list[Effect]:  # override
-        return [*super().all_effects, *self.target.all_effects, *self.traits]
+            refs.append(self.reference)
+        return sorted([*refs, *super().references], key=str)
 
 
 @dataclass(frozen=True)
@@ -439,18 +469,20 @@ class Action(ModifiersMixin, ReferenceMixin):
     targets: tuple[Target, ...]
 
     @property
-    def is_dereferenced(self) -> bool:
+    def all_effects(self) -> list[Effect]:  # override
+        target_effects = [e for t in self.targets for e in t.all_effects]
+        return [*super().all_effects, *self.conditions, *target_effects]
+
+    @property
+    def references(self) -> list[Origin]:  # override
+        refs = []
         if (self.reference is not None
                 and isinstance(self.reference, Origin)
                 and self.reference.category_path in PARSED_CATEGORIES):
-            return False
-        return all(item.is_dereferenced for item
-                   in (*self.params, *self.modifiers, *self.conditions, *self.targets))
-
-    @property
-    def all_effects(self) -> list[Effect]:  # override
-        target_effects = [t.all_effects for t in self.targets]
-        return [*super().all_effects, *self.conditions, *target_effects]
+            refs.append(self.reference)
+        return sorted(
+            [*refs, *[p.value for p in self.params if not p.is_resolved], *super().references],
+            key=str)
 
     @property
     def is_simple(self) -> bool:
@@ -465,28 +497,24 @@ class Unit(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
     actions: tuple[Action, ...]
     traits: tuple[CategoryEffect, ...]
 
-    # @property
-    # def total_hitpoints(self) -> float:
-    #     return self.hitpoints * self.group_size
-    #
     def __post_init__(self) -> None:
         super().__post_init__()
         if self.category != "Units":
             raise ValueError(f"not a path to an unit .xml: {self.path}")
 
     @property
-    def is_dereferenced(self) -> bool:
+    def all_effects(self) -> list[Effect]:  # override
+        action_effects = [e for a in self.actions for e in a.all_effects]
+        return [*super().all_effects, *self.weapons, *action_effects, *self.traits]
+
+    @property
+    def references(self) -> list[Origin]:  # override
+        refs = []
         if (self.reference is not None
                 and isinstance(self.reference, Origin)
                 and self.reference.category_path in PARSED_CATEGORIES):
-            return False
-        return all(item.is_dereferenced for item
-                   in (*self.modifiers, *self.weapons, *self.actions, *self.traits))
-
-    @property
-    def all_effects(self) -> list[Effect]:  # override
-        action_effects = [a.all_effects for a in self.actions]
-        return [*super().all_effects, *self.weapons, *action_effects, *self.traits]
+            refs.append(self.reference)
+        return sorted([*refs, *super().references], key=str)
 
     @property
     def elaborate_actions(self) -> list[Action]:
@@ -520,11 +548,16 @@ class Unit(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
         return self._get_key_property("moraleMax", int)
 
 
-def get_mod_effects(objects: list[Parsed | Action]) -> OrderedDict[str, list[Parsed | Action]]:
+def get_mod_effects(objects: list[Parsed | Action], most_numerous_first=False
+                    ) -> OrderedDict[str, list[Parsed | Action]]:
     effects_map = defaultdict(list)
     for obj in objects:
         for e in {e.name for m in obj.modifiers for e in m.effects}:
             effects_map[e].append(obj)
+    if most_numerous_first:
+        new_map = [(k, v) for k, v in effects_map.items()]
+        new_map.sort(key=lambda pair: len(pair[1]), reverse=True)
+        return OrderedDict(new_map)
     return OrderedDict(sorted((k, v) for k, v in effects_map.items()))
 
 
@@ -541,6 +574,5 @@ def get_objects(objects: list[Parsed | Action], *names: str) -> list[Parsed | Ac
     for name in names:  # match number of outputs with number of inputs
         if name not in {r.name for r, _ in retrieved}:
             retrieved.append((None, d[name]))
-    retrieved.sort(key=lambda r: r[1])    # preserve the input order
+    retrieved.sort(key=lambda r: r[1])  # preserve the input ordering
     return [r[0] for r in retrieved]
-
