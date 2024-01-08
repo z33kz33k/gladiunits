@@ -18,8 +18,7 @@ from lxml.etree import XMLSyntaxError, _Element as Element
 from gladiunits.constants import PathLike, T
 from gladiunits.data import (Action, Area, AreaModifier, Modifier, Origin, Parameter, Target,
                              TextsMixin, CATEGORIES, FACTIONS, Effect, CategoryEffect, ModifierType,
-                             Trait, Unit, Upgrade,
-                             Weapon, WeaponType)
+                             Trait, Unit, Upgrade, Weapon, WeaponType)
 from gladiunits.utils import from_iterable
 
 
@@ -278,12 +277,12 @@ class XmlParser(FileParser):
         params = [cls.to_param(attr, value, category) for attr, value in element.attrib.items()]
 
         if process_sub_effects:
-            sub_effects = tuple(cls.to_effect(sub_el, category) for sub_el in element)
+            sub_effects = [cls.to_effect(sub_el, category) for sub_el in element]
         else:
-            sub_effects = ()
+            sub_effects = []
         if CategoryEffect.is_valid(name):
-            return CategoryEffect(name, tuple(params), sub_effects)
-        return Effect(name, tuple(params), sub_effects)
+            return CategoryEffect(name, params, sub_effects)
+        return Effect(name, params, sub_effects)
 
     @staticmethod
     def to_param(attr: str, value: str, category: str | None) -> Parameter:
@@ -303,18 +302,18 @@ class XmlParser(FileParser):
         elif isinstance(value_type, tuple):  # weaponSlotNames case (collection of origins)
             attr_category = CategoryEffect.get_category(attr)
             category = attr_category if attr_category else category
-            return Parameter(attr, tuple(Origin(Path(category) / v) for v in value.split()))
+            return Parameter(attr, [Origin(Path(category) / v) for v in value.split()])
         return Parameter(attr, value_type(value))
 
     @classmethod
     def parse_effects(
             cls, parent_element: Element,
             container_xpath="effects",
-            process_sub_effects=True) -> tuple[Effect | CategoryEffect, ...]:
-        return tuple(
+            process_sub_effects=True) -> list[Effect | CategoryEffect]:
+        return [
             cls.to_effect(sub_el, process_sub_effects=process_sub_effects)
             for el in parent_element.findall(container_xpath)
-            for sub_el in el)
+            for sub_el in el]
 
     @classmethod
     def parse_modifier(
@@ -327,7 +326,7 @@ class XmlParser(FileParser):
         return Modifier(type_, conditions, effects)
 
     @classmethod
-    def parse_modifiers(cls, root: Element) -> tuple[Modifier | AreaModifier, ...]:
+    def parse_modifiers(cls, root: Element) -> list[Modifier | AreaModifier]:
         modifier_tags = {*{mod_type.value for mod_type in ModifierType}, "areas"}
         modifiers, container_elements = [], [el for el in root if el.tag in modifier_tags]
         for el in container_elements:
@@ -345,7 +344,7 @@ class XmlParser(FileParser):
                     for modifier_el in sub_el.findall(".//modifier"):
                         modifiers.append(cls.parse_modifier(modifier_el, type_))
 
-        return tuple(modifiers)
+        return modifiers
 
     @staticmethod
     def parse_area(area_el: Element) -> Area:
@@ -409,7 +408,7 @@ class UpgradeParser(XmlParser):
         return self._tier
 
     @property
-    def required_upgrades(self) -> tuple[Origin, ...]:
+    def required_upgrades(self) -> list[Origin]:
         return self._required_upgrades
 
     @property
@@ -428,9 +427,9 @@ class UpgradeParser(XmlParser):
         self._reference = self.parse_reference(self.root)
         self._tier = self.root.attrib.get("position")
         self._tier = int(self._tier) if self._tier else 0
-        self._required_upgrades = tuple(
+        self._required_upgrades = [
             Origin(Path("Upgrades") / el.attrib["name"]) for el in self.root.findall(
-                "requiredUpgrades/upgrade"))
+                "requiredUpgrades/upgrade")]
         self._dlc = self.root.attrib.get("dlc")
         if self._dlc:
             self._dlc = DISPLAYED_TEXTS.get(str(Path("WorldParameters") / self._dlc))
@@ -543,11 +542,11 @@ class TraitParser(XmlParser):
         return self._type
 
     @property
-    def modifiers(self) -> tuple[Modifier | AreaModifier, ...]:
+    def modifiers(self) -> list[Modifier | AreaModifier]:
         return self._modifiers
 
     @property
-    def target_conditions(self) -> tuple[Effect, ...]:
+    def target_conditions(self) -> list[Effect]:
         return self._target_conditions
 
     @property
@@ -578,13 +577,13 @@ class TraitParser(XmlParser):
         if self._stacking:
             self._stacking = True if self._stacking == "1" else False
 
-    def _parse_target_conditions(self) -> tuple[Effect, ...]:
+    def _parse_target_conditions(self) -> list[Effect]:
         conditions = []
         target_conditions_el = self.root.find("targetConditions")
         if target_conditions_el is not None:
             for sub_el in target_conditions_el:
                 conditions.append(self.to_effect(sub_el))
-        return tuple(conditions)
+        return conditions
 
     def to_trait(self) -> Trait:
         return Trait(
@@ -620,7 +619,7 @@ class WeaponParser(XmlParser):
     ROOT_TAG = "weapon"
 
     @property
-    def modifiers(self) -> tuple[Modifier, ...]:
+    def modifiers(self) -> list[Modifier]:
         return self._modifiers
 
     @property
@@ -632,7 +631,7 @@ class WeaponParser(XmlParser):
         return self._target
 
     @property
-    def traits(self) -> tuple[CategoryEffect, ...]:
+    def traits(self) -> list[CategoryEffect]:
         return self._traits
 
     @property
@@ -693,7 +692,7 @@ class _ActionSubParser:
         return self.root.tag
 
     @property
-    def params(self) -> tuple[Parameter, ...]:
+    def params(self) -> list[Parameter]:
         return self._params
 
     @property
@@ -705,23 +704,22 @@ class _ActionSubParser:
         return self._texts
 
     @property
-    def modifiers(self) -> tuple[Modifier, ...]:
+    def modifiers(self) -> list[Modifier]:
         return self._modifiers
 
     @property
-    def conditions(self) -> tuple[Effect, ...]:
+    def conditions(self) -> list[Effect]:
         return self._conditions
 
     @property
-    def targets(self) -> tuple[Target, ...]:
+    def targets(self) -> list[Target]:
         return self._targets
 
     def __init__(self, root: Element) -> None:
         self._root = root
         self._reference = XmlParser.parse_reference(self.root)
         self._texts = self._parse_texts()
-        self._params = tuple(
-            XmlParser.to_param(k, v, "Actions") for k, v in self.root.attrib.items())
+        self._params = [XmlParser.to_param(k, v, "Actions") for k, v in self.root.attrib.items()]
         self._modifiers = XmlParser.parse_modifiers(self.root)
         self._conditions = XmlParser.parse_effects(self.root, "conditions")
         self._targets = self._parse_targets()
@@ -742,11 +740,11 @@ class _ActionSubParser:
                         return get_texts(Origin(Path("Weapons") / name))
                 return None
 
-    def _parse_targets(self) -> tuple[Target, ...]:
+    def _parse_targets(self) -> list[Target]:
         root = self.root.find("beginTargets")
         if root is None:
-            return ()
-        return tuple(XmlParser.parse_target(el) for el in root)
+            return []
+        return [XmlParser.parse_target(el) for el in root]
 
     def to_action(self) -> Action:
         return Action(self.reference, self.modifiers, self.name, self.params, self.texts,
@@ -761,19 +759,19 @@ class UnitParser(XmlParser):
         return self._group_size
 
     @property
-    def modifiers(self) -> tuple[Modifier, ...]:
+    def modifiers(self) -> list[Modifier]:
         return self._modifiers
 
     @property
-    def weapons(self) -> tuple[CategoryEffect, ...]:
+    def weapons(self) -> list[CategoryEffect]:
         return self._weapons
 
     @property
-    def actions(self) -> tuple[Action, ...]:
+    def actions(self) -> list[Action]:
         return self._actions
 
     @property
-    def traits(self) -> tuple[CategoryEffect, ...]:
+    def traits(self) -> list[CategoryEffect]:
         return self._traits
 
     @property
@@ -790,7 +788,7 @@ class UnitParser(XmlParser):
         self._group_size = int(group_el.attrib["size"]) if group_el is not None else 1
         self._modifiers = self.parse_modifiers(self.root)
         self._weapons = self.parse_effects(self.root, "weapons", process_sub_effects=False)
-        self._actions = tuple(_ActionSubParser(el).to_action() for el in self.root.find("actions"))
+        self._actions = [_ActionSubParser(el).to_action() for el in self.root.find("actions")]
         self._traits = self.parse_effects(self.root, "traits")
 
     def to_unit(self) -> Unit:
@@ -813,3 +811,6 @@ def parse_units() -> list[Unit]:
     return [UnitParser(Path(dir_) / f).to_unit() for dir_, _, files
             in os.walk(rootdir) for f in files]
 
+
+def parse_all() -> tuple[list[Upgrade], list[Trait], list[Weapon], list[Unit]]:
+    return parse_upgrades(), parse_traits(), parse_weapons(), parse_units()
