@@ -9,7 +9,7 @@
 """
 from collections import OrderedDict, defaultdict
 from enum import Enum
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, is_dataclass
 from pathlib import Path
 from typing import Any, Literal, ClassVar, Type, TypeAlias, Union
 
@@ -59,7 +59,7 @@ FACTIONS = [
 ]
 
 
-@dataclass
+@dataclass(frozen=True)
 class Origin:
     path: Path
 
@@ -109,7 +109,7 @@ class Origin:
         return str(self.path)
 
 
-@dataclass
+@dataclass(frozen=True)
 class TextsMixin:
     name: str
     description: str | None
@@ -117,10 +117,11 @@ class TextsMixin:
 
 
 Parsed: TypeAlias = Union["Upgrade", "Trait", "Weapon", "Unit"]
-ParamValue: TypeAlias = (Parsed | list[Parsed] | Origin | list[Origin] | float | int | str | bool)
+ParamValue: TypeAlias = (Parsed | tuple[Parsed, ...] | Origin | tuple[Origin, ...] | float | int |
+                         str | bool)
 
 
-@dataclass
+@dataclass(frozen=True)
 class ReferenceMixin:
     reference: Parsed | Origin | None
 
@@ -131,11 +132,39 @@ class ReferenceMixin:
         return self.reference.category
 
 
-def is_unresolved_reference(value: Any) -> bool:
+def is_unresolved_ref(value: Any) -> bool:
     return type(value) is Origin and value.category in PARSED_CATEGORIES
 
 
-@dataclass
+# recursive
+def collect_unresolved_refs(
+        obj: Any, crumbs="",
+        collected: dict[str, Origin] | None = None) -> dict[str, Origin]:
+    crumbs = crumbs.split(".") if crumbs else []
+    collected = collected or {}
+
+    if is_dataclass(obj):
+        for field in fields(obj):
+            crumbs.append(field.name)
+            value = getattr(obj, field.name)
+
+            if isinstance(value, tuple):
+                for i, item in enumerate(value):
+                    crumbs.append(str(i))
+                    collected = collect_unresolved_refs(item, ".".join(crumbs), collected)
+                    # trim crumbs
+                    crumbs = crumbs[:-1]
+
+            elif is_unresolved_ref(value):
+                collected[".".join(crumbs)] = value
+
+            # trim crumbs
+            crumbs = crumbs[:-1]
+
+    return collected
+
+
+@dataclass(frozen=True)
 class Parameter:
     TYPES: ClassVar[dict[str, Any]] = {
         'action': Origin,
@@ -207,38 +236,38 @@ class Parameter:
             raise TypeError(f"unrecognized parameter type: {self.type!r}")
 
     @property
+    def unresolved_refs(self) -> OrderedDict[str, Origin]:
+        return OrderedDict(sorted((k, v) for k, v in collect_unresolved_refs(self).items()))
+
+    @property
     def is_resolved(self) -> bool:
-        if is_unresolved_reference(self.value):
-            return False
-        if isinstance(self.value, list) and any(is_unresolved_reference(v) for v in self.value):
-            return False
-        return True
+        return not self.unresolved_refs
 
 
-@dataclass
+@dataclass(frozen=True)
 class Effect:
     name: str
-    params: list[Parameter]
-    sub_effects: list["Effect"]
+    params: tuple[Parameter, ...]
+    sub_effects: tuple["Effect", ...]
 
     @property
     def all_params(self) -> list[Parameter]:
         return [*self.params, *[p for e in self.sub_effects for p in e.all_params]]
 
     @property
-    def unresolved_references(self) -> list[Origin]:
-        return sorted([p.value for p in self.all_params if not p.is_resolved], key=str)
+    def unresolved_refs(self) -> OrderedDict[str, Origin]:
+        return OrderedDict(sorted((k, v) for k, v in collect_unresolved_refs(self).items()))
 
     @property
     def is_resolved(self) -> bool:
-        return not self.unresolved_references
+        return not self.unresolved_refs
 
     @property
     def is_negative(self) -> bool:
         return len(self.name) > 3 and self.name.startswith("no") and self.name[2].isupper()
 
 
-@dataclass
+@dataclass(frozen=True)
 class CategoryEffect(Effect):
     def __post_init__(self) -> None:
         if not self.is_valid(self.name):
@@ -293,11 +322,11 @@ class ModifierType(Enum):
             return cls.UNKNOWN
 
 
-@dataclass
+@dataclass(frozen=True)
 class Modifier:
     type: ModifierType
-    conditions: list[Effect]
-    effects: list[Effect]
+    conditions: tuple[Effect, ...]
+    effects: tuple[Effect, ...]
 
     @property
     def all_effects(self) -> list[Effect]:
@@ -308,12 +337,12 @@ class Modifier:
         return [p for e in self.all_effects for p in e.all_params]
 
     @property
-    def unresolved_references(self) -> list[Origin]:
-        return sorted([p.value for p in self.all_params if not p.is_resolved], key=str)
+    def unresolved_refs(self) -> OrderedDict[str, Origin]:
+        return OrderedDict(sorted((k, v) for k, v in collect_unresolved_refs(self).items()))
 
     @property
-    def is_resolved(self) -> bool:
-        return all(p.is_resolved for p in self.all_params)
+    def is_unresolved(self) -> bool:
+        return not self.unresolved_refs
 
 
 @dataclass(frozen=True)
@@ -323,14 +352,14 @@ class Area:
     exclude_radius: int | None
 
 
-@dataclass
+@dataclass(frozen=True)
 class AreaModifier(Modifier):
     area: Area
 
 
-@dataclass
+@dataclass(frozen=True)
 class ModifiersMixin:
-    modifiers: list[Modifier | AreaModifier]
+    modifiers: tuple[Modifier | AreaModifier, ...]
 
     @property
     def all_effects(self) -> list[Effect]:
@@ -341,19 +370,18 @@ class ModifiersMixin:
         return [e for m in self.modifiers for e in m.effects]
 
     @property
-    def unresolved_references(self) -> list[Origin]:
-        return sorted(
-            [p.value for e in self.all_effects for p in e.all_params if not p.is_resolved], key=str)
+    def unresolved_refs(self) -> OrderedDict[str, Origin]:
+        return OrderedDict(sorted((k, v) for k, v in collect_unresolved_refs(self).items()))
 
     @property
     def is_resolved(self) -> bool:
-        return not self.unresolved_references
+        return not self.unresolved_refs
 
 
-@dataclass
+@dataclass(frozen=True)
 class Upgrade(ReferenceMixin, TextsMixin, Origin):
     tier: int
-    required_upgrades: list[Union["Upgrade",  Origin]]
+    required_upgrades: tuple[Union["Upgrade",  Origin], ...]
     dlc: str | None
 
     def __post_init__(self) -> None:
@@ -364,22 +392,18 @@ class Upgrade(ReferenceMixin, TextsMixin, Origin):
             raise ValueError("tier must be an integer between 0 and 10")
 
     @property
-    def unresolved_references(self) -> list[Origin]:
-        refs = []
-        if is_unresolved_reference(self.reference):
-            refs.append(self.reference)
-        return sorted(
-            [*refs, *[u for u in self.required_upgrades if isinstance(u, Origin)]], key=str)
+    def unresolved_refs(self) -> OrderedDict[str, Origin]:
+        return OrderedDict(sorted((k, v) for k, v in collect_unresolved_refs(self).items()))
 
     @property
     def is_resolved(self) -> bool:
-        return not self.unresolved_references
+        return not self.unresolved_refs
 
 
-@dataclass
+@dataclass(frozen=True)
 class Trait(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
     type: Literal["Buff", "Debuff"] | None
-    target_conditions: list[Effect]
+    target_conditions: tuple[Effect, ...]
     max_rank: int | None
     stacking: bool | None
 
@@ -392,21 +416,14 @@ class Trait(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
     def all_effects(self) -> list[Effect]:  # override
         return [*self.target_conditions, *super().all_effects]
 
-    @property
-    def unresolved_references(self) -> list[Origin]:  # override
-        refs = []
-        if is_unresolved_reference(self.reference):
-            refs.append(self.reference)
-        return sorted([*refs, *super().unresolved_references], key=str)
 
-
-@dataclass
+@dataclass(frozen=True)
 class Target(ModifiersMixin):
     is_self_target: bool
     max_range: int | None
     min_range: int | None
     line_of_sight: int | None
-    conditions: list[Effect]
+    conditions: tuple[Effect, ...]
 
     @property
     def all_effects(self) -> list[Effect]:  # override
@@ -432,11 +449,11 @@ class WeaponType(Enum):
             return cls.UNKNOWN
 
 
-@dataclass
+@dataclass(frozen=True)
 class Weapon(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
     type: WeaponType
     target: Target | None
-    traits: list[CategoryEffect]
+    traits: tuple[CategoryEffect, ...]
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -448,21 +465,14 @@ class Weapon(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
         target_effects = self.target.all_effects if self.target else []
         return [*super().all_effects, *self.traits] + target_effects
 
-    @property
-    def unresolved_references(self) -> list[Origin]:  # override
-        refs = []
-        if is_unresolved_reference(self.reference):
-            refs.append(self.reference)
-        return sorted([*refs, *super().unresolved_references], key=str)
 
-
-@dataclass
+@dataclass(frozen=True)
 class Action(ModifiersMixin, ReferenceMixin):
     name: str
-    params: list[Parameter]
+    params: tuple[Parameter, ...]
     texts: TextsMixin | None
-    conditions: list[Effect]
-    targets: list[Target]
+    conditions: tuple[Effect, ...]
+    targets: tuple[Target, ...]
 
     @property
     def all_effects(self) -> list[Effect]:  # override
@@ -470,26 +480,17 @@ class Action(ModifiersMixin, ReferenceMixin):
         return [*super().all_effects, *self.conditions, *target_effects]
 
     @property
-    def unresolved_references(self) -> list[Origin]:  # override
-        refs = []
-        if is_unresolved_reference(self.reference):
-            refs.append(self.reference)
-        return sorted(
-            [*refs, *[p.value for p in self.params if not p.is_resolved],
-             *super().unresolved_references], key=str)
-
-    @property
     def is_simple(self) -> bool:
         return all(
             not item for item in (self.params, self.modifiers, self.conditions, self.targets))
 
 
-@dataclass
+@dataclass(frozen=True)
 class Unit(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
     group_size: int
-    weapons: list[CategoryEffect]
-    actions: list[Action]
-    traits: list[CategoryEffect]
+    weapons: tuple[CategoryEffect, ...]
+    actions: tuple[Action, ...]
+    traits: tuple[CategoryEffect, ...]
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -500,15 +501,6 @@ class Unit(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
     def all_effects(self) -> list[Effect]:  # override
         action_effects = [e for a in self.actions for e in a.all_effects]
         return [*super().all_effects, *self.weapons, *action_effects, *self.traits]
-
-    @property
-    def unresolved_references(self) -> list[Origin]:  # override
-        refs = []
-        if is_unresolved_reference(self.reference):
-            refs.append(self.reference)
-        return sorted(
-            [*refs, *[r for item in [*self.modifiers, *self.weapons, *self.actions, *self.traits]
-                      for r in item.unresolved_references]], key=str)
 
     @property
     def elaborate_actions(self) -> list[Action]:

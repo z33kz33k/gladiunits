@@ -11,7 +11,7 @@ from copy import deepcopy
 from dataclasses import fields, is_dataclass
 from typing import Any
 
-from gladiunits.data import Parsed, is_unresolved_reference
+from gladiunits.data import Parsed, is_unresolved_ref
 from gladiunits.parse import parse_all
 
 
@@ -39,35 +39,11 @@ class Dereferencer:
 
     def __init__(self, base: Parsed, context: dict[str, Parsed]) -> None:
         self._base, self._context = base, context
-        self._refs = {}
-        self._collect()
         self._resolved = self._get_resolved()
-
-    def _collect(self, obj: Any | None = None, crumbs="") -> None:  # recursive
-        crumbs = crumbs.split(".") if crumbs else []
-        obj = obj or self.base
-
-        if is_dataclass(obj):
-            for field in fields(obj):
-                crumbs.append(field.name)
-                value = getattr(obj, field.name)
-
-                if isinstance(value, list):
-                    for i, item in enumerate(value):
-                        crumbs.append(str(i))
-                        self._collect(item, ".".join(crumbs))
-                        # trim crumbs
-                        crumbs = crumbs[:-1]
-
-                elif is_unresolved_reference(value):
-                    self._refs[".".join(crumbs)] = value
-
-                # trim crumbs
-                crumbs = crumbs[:-1]
 
     def _get_resolved(self) -> dict[str, Parsed]:
         resolved = {}
-        for ref, value in self._refs.items():
+        for ref, value in self.base.unresolved_references.items():
             obj = self.context.get(str(value))
             if obj:
                 resolved[ref] = obj
@@ -80,7 +56,7 @@ class Dereferencer:
             while stack:
                 token = stack.pop()
                 if not stack:
-                    setattr(current_obj, token, replacer)
+                    current_obj.__dict__[token] = replacer
                     break
 
                 if token.isdigit():
