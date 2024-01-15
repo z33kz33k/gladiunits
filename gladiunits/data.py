@@ -145,6 +145,8 @@ def collect_unresolved_refs(
 
     if is_dataclass(obj):
         for field in fields(obj):
+            if field.name == "reference":
+                continue
             crumbs.append(field.name)
             value = getattr(obj, field.name)
 
