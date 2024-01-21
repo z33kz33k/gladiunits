@@ -58,6 +58,27 @@ FACTIONS = [
     'Tyranids',
 ]
 
+_CIRCULAR_REFS = {
+    "Units/ChaosSpaceMarines/MasterOfPossession",
+    "Units/Eldar/FirePrism",
+    "Units/Neutral/Artefacts/Damage",
+    "Units/Neutral/Artefacts/Healing",
+    "Units/Neutral/Artefacts/Hitpoints",
+    "Units/Neutral/Artefacts/Loyalty",
+    "Units/Neutral/Artefacts/Movement",
+    "Units/Neutral/Artefacts/Sight",
+    "Units/Neutral/CatachanDevilLair",
+    "Units/Neutral/Psychneuein",
+    "Units/SpaceMarines/Hunter",
+    "Units/SpaceMarines/Predator",
+    "Units/SpaceMarines/ThunderfireCannon",
+    "Units/SpaceMarines/Vindicator",
+    "Units/SpaceMarines/Whirlwind",
+    "Traits/ChaosSpaceMarines/GiftOfMutation",
+    "Traits/ChaosSpaceMarines/Bloated",
+    "Traits/Tau/TargetAcquired",
+}
+
 
 @dataclass(frozen=True)
 class Origin:
@@ -133,7 +154,12 @@ class ReferenceMixin:
 
 
 def is_unresolved_ref(value: Any) -> bool:
-    return type(value) is Origin and value.category in PARSED_CATEGORIES
+    # needs an explicit type check
+    if type(value) is not Origin:
+        return False
+    if str(value.category_path) in _CIRCULAR_REFS:
+        return False
+    return value.category in PARSED_CATEGORIES
 
 
 # recursive

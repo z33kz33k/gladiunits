@@ -67,7 +67,6 @@ def dereference(resolved: dict[str, Parsed],
                 ) -> tuple[list[Upgrade], list[Trait], list[Weapon], list[Unit]]:
     stack = unresolved[::-1]
     stack = deque(stack)
-    _counter = 0
     while stack:
         obj = stack.pop()
         deref = Dereferencer(obj, context=resolved)
@@ -76,11 +75,6 @@ def dereference(resolved: dict[str, Parsed],
             resolved[str(obj.category_path)] = obj
         else:
             stack.appendleft(obj)
-
-        _counter += 1
-
-        if _counter % 1000 == 0:
-            pass
 
     upgrades, traits, weapons, units = [], [], [], []
     for v in resolved.values():

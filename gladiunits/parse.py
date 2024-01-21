@@ -293,6 +293,12 @@ class XmlParser(FileParser):
             return Parameter("name", Origin(Path(category) / value))
         elif CategoryEffect.is_valid(attr) and value_type is Origin:
             attr_category = CategoryEffect.get_category(attr)
+
+            if attr_category == "Weapons":
+                alias = WeaponParser.ALIASES.get(value)
+                if alias:
+                    return Parameter(attr, Origin(Path(attr_category) / alias))
+
             return Parameter(attr, Origin(Path(attr_category) / value))
         elif attr == "icon":
             return Parameter("reference", Origin(Path(value)))
@@ -618,6 +624,11 @@ def parse_traits() -> list[Trait]:
 
 class WeaponParser(XmlParser):
     ROOT_TAG = "weapon"
+    ALIASES = {
+        "Mechatendrils": "Meltagun",
+        "SeekerMissile0": "SeekerMissile",
+        "SeekerMissile1": "SeekerMissile",
+    }
 
     @property
     def modifiers(self) -> tuple[Modifier, ...]:
