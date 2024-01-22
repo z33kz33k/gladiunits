@@ -9,6 +9,7 @@
 """
 import os
 import re
+from abc import abstractmethod
 from collections import deque
 from pathlib import Path
 
@@ -16,7 +17,8 @@ import lxml
 from lxml.etree import XMLSyntaxError, _Element as Element
 
 from gladiunits.constants import PathLike, T
-from gladiunits.data import (Action, Area, AreaModifier, Modifier, Origin, Parameter, Target,
+from gladiunits.data import (Action, Area, AreaModifier, Modifier, Origin, Parameter, Data,
+                             Target,
                              TextsMixin, CATEGORIES, FACTIONS, Effect, CategoryEffect, ModifierType,
                              Trait, Unit, Upgrade, Weapon, WeaponType)
 from gladiunits.utils import from_iterable
@@ -401,6 +403,10 @@ class XmlParser(FileParser):
             return None
         return value_type(value)
 
+    @abstractmethod
+    def to_data(self) -> Data:
+        raise NotImplementedError
+
 
 class UpgradeParser(XmlParser):
     """Parser of 'Upgrades' .xml files.
@@ -441,7 +447,7 @@ class UpgradeParser(XmlParser):
         if self._dlc:
             self._dlc = DISPLAYED_TEXTS.get(str(Path("WorldParameters") / self._dlc))
 
-    def to_upgrade(self) -> Upgrade:
+    def to_data(self) -> Upgrade:  # override
         return Upgrade(
             self.origin.path,
             self.texts.name,
@@ -454,12 +460,15 @@ class UpgradeParser(XmlParser):
         )
 
 
-def parse_upgrades() -> list[Upgrade]:
+def parse_upgrades(sort=False) -> list[Upgrade]:
     # required correcting a malformed original file:
     # Upgrades/Tau/RipykaVa.xml (doubly defined 'icon' attribute)
     rootdir = Path(r"xml/World/Upgrades")
-    return [UpgradeParser(f).to_upgrade() for p in rootdir.iterdir()
-            if p.is_dir() for f in p.iterdir()]
+    upgrades = [UpgradeParser(f).to_data() for p in rootdir.iterdir()
+                if p.is_dir() for f in p.iterdir()]
+    if sort:
+        sorted(upgrades, key=str)
+    return upgrades
 
 
 class TraitParser(XmlParser):
@@ -592,7 +601,7 @@ class TraitParser(XmlParser):
                 conditions.append(self.to_effect(sub_el))
         return tuple(conditions)
 
-    def to_trait(self) -> Trait:
+    def to_data(self) -> Trait:  # override
         return Trait(
             self.origin.path,
             self.texts.name,
@@ -607,7 +616,7 @@ class TraitParser(XmlParser):
         )
 
 
-def parse_traits() -> list[Trait]:
+def parse_traits(sort=False) -> list[Trait]:
     # required correcting a malformed original file:
     # Traits/ChaosSpaceMarines/RunesOfTheBloodGod.xml (missing whitespace)
     rootdir = Path(r"xml/World/Traits")
@@ -616,9 +625,11 @@ def parse_traits() -> list[Trait]:
     traits = []
     for f in [*flat, *nested]:
         try:
-            traits.append(TraitParser(f).to_trait())
+            traits.append(TraitParser(f).to_data())
         except XMLSyntaxError:
             pass  # Traits/OrkoidFungusFood.xml (the body commented out)
+    if sort:
+        return sorted(traits, key=str)
     return traits
 
 
@@ -675,7 +686,7 @@ class WeaponParser(XmlParser):
             return None
         return self.parse_target(target_el)
 
-    def to_weapon(self) -> Weapon:
+    def to_data(self) -> Weapon:  # override
         return Weapon(
             self.origin.path,
             self.texts.name,
@@ -689,9 +700,12 @@ class WeaponParser(XmlParser):
         )
 
 
-def parse_weapons() -> list[Weapon]:
+def parse_weapons(sort=False) -> list[Weapon]:
     rootdir = Path(r"xml/World/Weapons")
-    return [WeaponParser(f).to_weapon() for f in rootdir.iterdir()]
+    weapons = [WeaponParser(f).to_data() for f in rootdir.iterdir()]
+    if sort:
+        return sorted(weapons, key=str)
+    return weapons
 
 
 class _ActionSubParser:
@@ -804,7 +818,7 @@ class UnitParser(XmlParser):
         self._actions = tuple(_ActionSubParser(el).to_action() for el in self.root.find("actions"))
         self._traits = self.parse_effects(self.root, "traits")
 
-    def to_unit(self) -> Unit:
+    def to_data(self) -> Unit:  # override
         return Unit(
             self.origin.path,
             self.texts.name,
@@ -819,11 +833,30 @@ class UnitParser(XmlParser):
         )
 
 
-def parse_units() -> list[Unit]:
+def parse_units(sort=False) -> list[Unit]:
     rootdir = Path(r"xml/World/Units")
-    return [UnitParser(Path(dir_) / f).to_unit() for dir_, _, files
-            in os.walk(rootdir) for f in files]
+    units = [UnitParser(Path(dir_) / f).to_data() for dir_, _, files
+             in os.walk(rootdir) for f in files]
+    if sort:
+        return sorted(units, key=str)
+    return units
 
 
-def parse_all() -> tuple[list[Upgrade], list[Trait], list[Weapon], list[Unit]]:
+def parse_all(sort=False) -> tuple[list[Upgrade], list[Trait], list[Weapon], list[Unit]]:
+    if sort:
+        return parse_upgrades(True), parse_traits(True), parse_weapons(True), parse_units(True)
     return parse_upgrades(), parse_traits(), parse_weapons(), parse_units()
+
+
+def from_origin(origin: Origin) -> Data:
+    file = Path("xml") / "World" / f"{str(origin.category_path)}.xml"
+    if origin.faction == "Upgrades":
+        return UpgradeParser(file).to_data()
+    elif origin.faction == "Traits":
+        return TraitParser(file).to_data()
+    elif origin.faction == "Weapons":
+        return WeaponParser(file).to_data()
+    elif origin.faction == "Units":
+        return UnitParser(file).to_data()
+    raise ValueError(f"Invalid origin for parsing: '{origin}'")
+

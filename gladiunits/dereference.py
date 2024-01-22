@@ -9,11 +9,11 @@
 """
 from collections import deque
 
-from gladiunits.data import Parsed, Trait, Unit, Upgrade, Weapon
+from gladiunits.data import Data, Trait, Unit, Upgrade, Weapon
 
 
 def get_context(upgrades: list[Upgrade], traits: list[Trait],
-                weapons: list[Weapon], units: list[Unit]) -> tuple[dict[str, Parsed], list[Parsed]]:
+                weapons: list[Weapon], units: list[Unit]) -> tuple[dict[str, Data], list[Data]]:
     upgrades.sort(key=lambda u: u.tier)
     parsed = [*upgrades, *traits, *weapons, *units]
     resolved, unresolved = {}, []
@@ -27,18 +27,18 @@ def get_context(upgrades: list[Upgrade], traits: list[Trait],
 
 class Dereferencer:
     @property
-    def base(self) -> Parsed:
+    def base(self) -> Data:
         return self._base
 
     @property
-    def context(self) -> dict[str, Parsed]:
+    def context(self) -> dict[str, Data]:
         return self._context
 
-    def __init__(self, base: Parsed, context: dict[str, Parsed]) -> None:
+    def __init__(self, base: Data, context: dict[str, Data]) -> None:
         self._base, self._context = base, context
         self._resolved = self._get_resolved()
 
-    def _get_resolved(self) -> dict[str, Parsed]:
+    def _get_resolved(self) -> dict[str, Data]:
         resolved = {}
         for ref, value in self.base.unresolved_refs.items():
             obj = self.context.get(str(value))
@@ -62,8 +62,8 @@ class Dereferencer:
                     current_obj = getattr(current_obj, token)
 
 
-def dereference(resolved: dict[str, Parsed],
-                unresolved: list[Parsed]
+def dereference(resolved: dict[str, Data],
+                unresolved: list[Data]
                 ) -> tuple[list[Upgrade], list[Trait], list[Weapon], list[Unit]]:
     stack = unresolved[::-1]
     stack = deque(stack)

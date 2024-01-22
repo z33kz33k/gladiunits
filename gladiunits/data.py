@@ -137,14 +137,14 @@ class TextsMixin:
     flavor: str | None
 
 
-Parsed: TypeAlias = Union["Upgrade", "Trait", "Weapon", "Unit"]
-ParamValue: TypeAlias = (Parsed | tuple[Parsed, ...] | Origin | tuple[Origin, ...] | float | int |
+Data: TypeAlias = Union["Upgrade", "Trait", "Weapon", "Unit"]
+ParamValue: TypeAlias = (Data | tuple[Data, ...] | Origin | tuple[Origin, ...] | float | int |
                          str | bool)
 
 
 @dataclass(frozen=True)
 class ReferenceMixin:
-    reference: Parsed | Origin | None
+    reference: Data | Origin | None
 
     @property
     def reffed_category(self) -> str | None:
@@ -530,10 +530,6 @@ class Unit(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
         action_effects = [e for a in self.actions for e in a.all_effects]
         return [*super().all_effects, *self.weapons, *action_effects, *self.traits]
 
-    @property
-    def elaborate_actions(self) -> list[Action]:
-        return [a for a in self.actions if not a.is_simple]
-
     def _get_key_property(self, name: str, convert_to: Type | None = None) -> ParamValue | None:
         effect = from_iterable(self.mod_effects, lambda e: e.name == name)
         if not effect:
@@ -561,9 +557,104 @@ class Unit(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
     def morale(self) -> int:
         return self._get_key_property("moraleMax", int)
 
+    # actions
+    @property
+    def simple_actions(self) -> list[Action]:
+        return [a for a in self.actions if a.is_simple]
 
-def get_mod_effects(objects: list[Parsed | Action], most_numerous_first=False
-                    ) -> OrderedDict[str, list[Parsed | Action]]:
+    @property
+    def elaborate_actions(self) -> list[Action]:
+        return [a for a in self.actions if not a.is_simple]
+
+    @property
+    def basic_actions(self) -> list[Action]:
+        return [a for a in self.elaborate_actions
+                if not any(p.type == "requiredUpgrade" for p in a.params)]
+
+    @property
+    def upgradeable_actions(self) -> list[Action]:
+        return [a for a in self.elaborate_actions
+                if any(p.type == "requiredUpgrade" for p in a.params)]
+
+    @property
+    def basic_traits(self) -> list[Origin]:
+        traits = [t for t in self.traits
+                  if not any(p.type == "requiredUpgrade" for p in t.params)]
+        return [p.value for t in traits for p in t.params if p.type == "name"]
+
+    @property
+    def upgradeable_traits(self) -> list[Origin]:
+        traits = [t for t in self.traits
+                  if any(p.type == "requiredUpgrade" for p in t.params)]
+        return [p.value for t in traits for p in t.params if p.type == "name"]
+
+    # key traits
+    @property
+    def is_vehicle(self) -> bool:
+        return any(str(t.category_path) == "Traits/Vehicle" for t in self.basic_traits)
+
+    @property
+    def is_tank(self) -> bool:  # subset of vehicles
+        return any(str(t.category_path) == "Traits/Tank" for t in self.basic_traits)
+
+    @property
+    def is_fortification(self) -> bool:  # most are transports too (hold cargo)
+        return any(str(t.category_path) == "Traits/Fortification" for t in self.basic_traits)
+
+    @property
+    def is_transport(self) -> bool:  # most are vehicles (apart from 2 monstrous creatures)
+        return any(str(t.category_path) == "Traits/Transport" for t in self.basic_traits)
+
+    @property
+    def is_hero(self) -> bool:
+        return any(str(t.category_path) == "Traits/Hero" for t in self.basic_traits)
+
+    @property
+    def is_monstrous_creature(self) -> bool:
+        return any(str(t.category_path) == "Traits/MonstrousCreature" for t in self.basic_traits)
+
+    @property
+    def is_walker(self) -> bool:  # subset of vehicles
+        return any(str(t.category_path) == "Traits/Walker" for t in self.basic_traits)
+
+    @property
+    def is_bike(self) -> bool:
+        return any(str(t.category_path) == "Traits/Bike" for t in self.basic_traits)
+
+    @property
+    def is_jetbike(self) -> bool:
+        return any(str(t.category_path) == "Traits/Jetbike" for t in self.basic_traits)
+
+    @property
+    def is_flyer(self) -> bool:  # subset of vehicles
+        return any(str(t.category_path) == "Traits/Flyer" for t in self.basic_traits)
+
+    @property
+    def is_infantry(self) -> bool:  # based on Painboy healing
+        return not self.is_fortification and not self.is_vehicle and not self.is_monstrous_creature
+
+    # action-based traits
+    @property
+    def is_jumper(self) -> bool:
+        return any(a.name == "jumpPack" for a in self.elaborate_actions)
+
+    @property
+    def is_scout(self) -> bool:
+        return any(a.name == "scout" for a in self.elaborate_actions)
+
+    @property
+    def is_tile_cleaner(self) -> bool:
+        return any("clearTile" in a.name for a in self.elaborate_actions)
+
+    # TODO: needs distinguishing a healing action among the parsed actions (based on
+    #  'sound="Actions/Heal"' and other details (valid targets)
+    # @property
+    # def is_healer(self) -> bool:
+    #     pass
+
+
+def get_mod_effects(objects: list[Data | Action], most_numerous_first=False
+                    ) -> OrderedDict[str, list[Data | Action]]:
     effects_map = defaultdict(list)
     for obj in objects:
         for e in {e.name for m in obj.modifiers for e in m.effects}:
@@ -575,11 +666,11 @@ def get_mod_effects(objects: list[Parsed | Action], most_numerous_first=False
     return OrderedDict(sorted((k, v) for k, v in effects_map.items()))
 
 
-def get_obj(objects: list[Parsed | Action], name: str) -> Parsed | Action | None:
+def get_obj(objects: list[Data | Action], name: str) -> Data | Action | None:
     return from_iterable(objects, lambda o: o.name == name)
 
 
-def get_objects(objects: list[Parsed | Action], *names: str) -> list[Parsed | Action | None]:
+def get_objects(objects: list[Data | Action], *names: str) -> list[Data | Action | None]:
     d = {n: i for i, n in enumerate(names)}
     retrieved = []
     for obj in objects:
