@@ -30,4 +30,6 @@ if not OUTPUT_DIR.is_dir():
     _log.warning(f"Creating missing output directory at: '{OUTPUT_DIR.resolve()}'")
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
+XML_DIR = Path("xml")
+
 

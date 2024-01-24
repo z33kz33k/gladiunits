@@ -165,7 +165,7 @@ def is_unresolved_ref(value: Any) -> bool:
 # recursive
 def collect_unresolved_refs(
         obj: Any, crumbs="",
-        collected: dict[str, Origin] | None = None) -> dict[str, Origin]:
+        collected: dict[str, Origin] = None) -> dict[str, Origin]:
     crumbs = crumbs.split(".") if crumbs else []
     collected = collected or {}
 
@@ -530,7 +530,7 @@ class Unit(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
         action_effects = [e for a in self.actions for e in a.all_effects]
         return [*super().all_effects, *self.weapons, *action_effects, *self.traits]
 
-    def _get_key_property(self, name: str, convert_to: Type | None = None) -> ParamValue | None:
+    def _get_key_property(self, name: str, convert_to: Type = None) -> ParamValue | None:
         effect = from_iterable(self.mod_effects, lambda e: e.name == name)
         if not effect:
             return None

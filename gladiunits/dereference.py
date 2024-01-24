@@ -12,8 +12,10 @@ from collections import deque
 from gladiunits.data import Data, Trait, Unit, Upgrade, Weapon
 
 
-def get_context(upgrades: list[Upgrade], traits: list[Trait],
-                weapons: list[Weapon], units: list[Unit]) -> tuple[dict[str, Data], list[Data]]:
+def get_context(upgrades: list[Upgrade] = (), traits: list[Trait] = (),
+                weapons: list[Weapon] = (),
+                units: list[Unit] = ()) -> tuple[dict[str, Data], list[Data]]:
+    upgrades = upgrades or []
     upgrades.sort(key=lambda u: u.tier)
     parsed = [*upgrades, *traits, *weapons, *units]
     resolved, unresolved = {}, []
@@ -62,6 +64,7 @@ class Dereferencer:
                     current_obj = getattr(current_obj, token)
 
 
+# TODO: break on not improving
 def dereference(resolved: dict[str, Data],
                 unresolved: list[Data]
                 ) -> tuple[list[Upgrade], list[Trait], list[Weapon], list[Unit]]:
