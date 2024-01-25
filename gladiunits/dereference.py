@@ -48,6 +48,7 @@ class Dereferencer:
                 resolved[ref] = obj
         return resolved
 
+    # TODO: I'm here trying to mutate a tuple :/
     def resolve(self) -> None:
         for crumbs, replacer in self._resolved.items():
             current_obj = self.base
@@ -55,7 +56,10 @@ class Dereferencer:
             while stack:
                 token = stack.pop()
                 if not stack:
-                    current_obj.__dict__[token] = replacer
+                    if token.isdigit():
+                        current_obj[int(token)] = replacer
+                    else:
+                        current_obj.__dict__[token] = replacer
                     break
 
                 if token.isdigit():
@@ -64,9 +68,8 @@ class Dereferencer:
                     current_obj = getattr(current_obj, token)
 
 
-# TODO: break on not improving
 def dereference(resolved: dict[str, Data],
-                unresolved: list[Data]
+                unresolved: list[Data], *ignored_categories: str
                 ) -> tuple[list[Upgrade], list[Trait], list[Weapon], list[Unit]]:
     stack = unresolved[::-1]
     stack = deque(stack)
@@ -77,6 +80,11 @@ def dereference(resolved: dict[str, Data],
         if obj.is_resolved:
             resolved[str(obj.category_path)] = obj
         else:
+            if ignored_categories:
+                cats = [ref.category for ref in obj.unresolved_refs.values()]
+                if all(c in ignored_categories for c in cats):
+                    stack.appendleft(obj)
+                    continue
             stack.appendleft(obj)
 
     upgrades, traits, weapons, units = [], [], [], []

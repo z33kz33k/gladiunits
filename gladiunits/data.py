@@ -179,7 +179,10 @@ def collect_unresolved_refs(
             if isinstance(value, tuple):
                 for i, item in enumerate(value):
                     crumbs.append(str(i))
-                    collected = collect_unresolved_refs(item, ".".join(crumbs), collected)
+                    if is_unresolved_ref(item):
+                        collected[".".join(crumbs)] = item
+                    else:
+                        collected = collect_unresolved_refs(item, ".".join(crumbs), collected)
                     # trim crumbs
                     crumbs = crumbs[:-1]
 
@@ -446,6 +449,27 @@ class Trait(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
 
 
 @dataclass(frozen=True)
+class UpgradeableTrait(Trait):
+    required_upgrade: Upgrade
+
+    @classmethod
+    def from_trait(cls, trait: Trait, required_upgrade: Upgrade) -> "UpgradeableTrait":
+        return UpgradeableTrait(
+            trait.path,
+            trait.name,
+            trait.description,
+            trait.flavor,
+            trait.reference,
+            trait.modifiers,
+            trait.type,
+            trait.target_conditions,
+            trait.max_rank,
+            trait.stacking,
+            required_upgrade
+        )
+
+
+@dataclass(frozen=True)
 class Target(ModifiersMixin):
     is_self_target: bool
     max_range: int | None
@@ -481,7 +505,7 @@ class WeaponType(Enum):
 class Weapon(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
     type: WeaponType
     target: Target | None
-    traits: tuple[CategoryEffect, ...]
+    traits: tuple[Trait | UpgradeableTrait, ...]
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -514,11 +538,33 @@ class Action(ModifiersMixin, ReferenceMixin):
 
 
 @dataclass(frozen=True)
+class CountedWeapon(Weapon):
+    count: int
+    enabled: bool
+
+    @classmethod
+    def from_weapon(cls, weapon: Weapon, count: int, enabled: bool) -> "CountedWeapon":
+        return CountedWeapon(
+            weapon.path,
+            weapon.name,
+            weapon.description,
+            weapon.flavor,
+            weapon.reference,
+            weapon.modifiers,
+            weapon.type,
+            weapon.target,
+            weapon.traits,
+            count,
+            enabled,
+        )
+
+
+@dataclass(frozen=True)
 class Unit(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
     group_size: int
-    weapons: tuple[CategoryEffect, ...]
+    weapons: tuple[CountedWeapon, ...]
     actions: tuple[Action, ...]
-    traits: tuple[CategoryEffect, ...]
+    traits: tuple[Trait | UpgradeableTrait, ...]
 
     def __post_init__(self) -> None:
         super().__post_init__()

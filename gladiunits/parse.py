@@ -12,15 +12,17 @@ import re
 from abc import abstractmethod
 from collections import deque
 from pathlib import Path
+from typing import Iterable
 
 import lxml
 from lxml.etree import XMLSyntaxError, _Element as Element
 
 from gladiunits.constants import PathLike, T, XML_DIR
-from gladiunits.data import (Action, Area, AreaModifier, Modifier, Origin, Parameter, Data,
+from gladiunits.data import (Action, Area, AreaModifier, CountedWeapon, Modifier, Origin, Parameter,
+                             Data,
                              Target,
                              TextsMixin, CATEGORIES, FACTIONS, Effect, CategoryEffect, ModifierType,
-                             Trait, Unit, Upgrade, Weapon, WeaponType)
+                             Trait, Unit, Upgrade, UpgradeableTrait, Weapon, WeaponType)
 from gladiunits.dereference import dereference, get_context
 from gladiunits.utils import from_iterable
 
@@ -426,6 +428,31 @@ class XmlParser:
         modifiers = self.parse_modifiers(target_el)
         return Target(modifiers, is_self_target, max_range, min_range, line_of_sight, conditions)
 
+    def parse_trait(self, trait_el: Element) -> Trait | UpgradeableTrait:
+        name, required_upgrade = trait_el.attrib["name"], trait_el.attrib.get("required_upgrade")
+        trait = self._context.get(name)
+        if not trait:
+            raise ValueError(f"Trait not retrievable: {name!r}")
+        if required_upgrade:
+            upgrade = self._context.get(required_upgrade)
+            if not upgrade:
+                raise ValueError(f"Upgrade not retrievable: {name!r}")
+            return UpgradeableTrait.from_trait(trait, upgrade)
+        return trait
+
+    def parse_weapon(self, weapon_el: Element) -> CountedWeapon:
+        name, count, enabled = weapon_el.attrib["name"], weapon_el.attrib.get(
+            "count"), weapon_el.attrib.get("enabled")
+        valid_attrs = "name", "slotName", "count", "enabled"
+        if any(attr not in valid_attrs for attr in weapon_el.attrib):
+            raise ValueError(f"Unrecognized weapon attrs among: {[*weapon_el.attrib]}")
+        weapon = self._context.get(name)
+        if not weapon:
+            raise ValueError(f"Weapon not retrievable: {name!r}")
+        count = int(count) if count else 1
+        enabled = True if not enabled else False
+        return CountedWeapon.from_weapon(weapon, count, enabled)
+
     @staticmethod
     def get_value(element: Element | None, xpath: str, value_type: T) -> T | None:
         if element is None:
@@ -489,12 +516,14 @@ class UpgradeParser(XmlParser):
         )
 
 
-def parse_upgrades() -> list[Upgrade]:
+def parse_upgrades(sort=False) -> list[Upgrade]:
     rootdir = XML_DIR / "World/Upgrades"
     upgrades = [UpgradeParser(f).to_data() for p in rootdir.iterdir()
                 if p.is_dir() for f in p.iterdir()]
     resolved, unresolved = get_context(upgrades=upgrades)
     upgrades, *_ = dereference(resolved, unresolved)
+    if sort:
+        return sorted(upgrades, key=str)
     return upgrades
 
 
@@ -622,7 +651,7 @@ class TraitParser(XmlParser):
         )
 
 
-def parse_traits(*upgrades: Upgrade) -> list[Trait]:
+def parse_traits(upgrades: Iterable[Upgrade], sort=False) -> list[Trait]:
     context = {str(u.category_path): u for u in upgrades}
     rootdir = Path(r"xml/World/Traits")
     flat = [f for f in rootdir.iterdir() if f.is_file()]
@@ -634,11 +663,12 @@ def parse_traits(*upgrades: Upgrade) -> list[Trait]:
         except XMLSyntaxError:
             pass  # Traits/OrkoidFungusFood.xml (the body commented out)
     resolved, unresolved = get_context(upgrades=[*upgrades], traits=traits)
-    _, traits, *_ = dereference(resolved, unresolved)
+    _, traits, *_ = dereference(resolved, unresolved, "Weapons", "Units")
+    if sort:
+        return sorted(traits, key=str)
     return traits
 
 
-# TODO: I'm here
 class WeaponParser(XmlParser):
     ROOT_TAG = "weapon"
     ALIASES = {
@@ -647,15 +677,15 @@ class WeaponParser(XmlParser):
         "SeekerMissile1": "SeekerMissile",
     }
 
-    def __init__(self, file: PathLike) -> None:
-        super().__init__(file)
+    def __init__(self, file: PathLike, context: dict[str, Data]) -> None:
+        super().__init__(file, context)
         if self.xml.file.parent.name != "Weapons":
             raise ValueError(f"Invalid input file: {self.xml.file}")
         self._reference = self.parse_reference(self.root)
         self._modifiers = self.parse_modifiers(self.root)
         self._type = self._parse_type()
         self._target = self._get_target()
-        self._traits = self.parse_effects(self.root, "traits")
+        self._traits = tuple(self.parse_trait(el) for el in self.root.find("traits"))
 
     def _parse_type(self) -> WeaponType:
         model_el = self.root.find("model")
@@ -686,9 +716,13 @@ class WeaponParser(XmlParser):
         )
 
 
-def parse_weapons(sort=False) -> list[Weapon]:
+def parse_weapons(upgrades: Iterable[Upgrade], traits: Iterable[Trait],
+                  sort=False) -> list[Weapon]:
+    context = {str(obj.category_path): obj for obj in [*upgrades, *traits]}
     rootdir = Path(r"xml/World/Weapons")
-    weapons = [WeaponParser(f).to_data() for f in rootdir.iterdir()]
+    weapons = [WeaponParser(f, context).to_data() for f in rootdir.iterdir()]
+    resolved, unresolved = get_context(upgrades=[*upgrades], traits=[*traits], weapons=weapons)
+    *_, weapons, _ = dereference(resolved, unresolved, "Units")
     if sort:
         return sorted(weapons, key=str)
     return weapons
@@ -696,45 +730,17 @@ def parse_weapons(sort=False) -> list[Weapon]:
 
 class _ActionSubParser(XmlParser):
     @property
-    def root(self) -> Element:
-        return self._root
-
-    @property
     def name(self) -> str:
         return self.root.tag
 
-    @property
-    def params(self) -> tuple[Parameter, ...]:
-        return self._params
-
-    @property
-    def reference(self) -> Origin | None:
-        return from_iterable(self.params, lambda p: p.type == "reference")
-
-    @property
-    def texts(self) -> TextsMixin | None:
-        return self._texts
-
-    @property
-    def modifiers(self) -> tuple[Modifier, ...]:
-        return self._modifiers
-
-    @property
-    def conditions(self) -> tuple[Effect, ...]:
-        return self._conditions
-
-    @property
-    def targets(self) -> tuple[Target, ...]:
-        return self._targets
-
-    def __init__(self, root: Element) -> None:
-        self._root = root
-        self._reference = Xml.parse_reference(self.root)
+    def __init__(self, root: Element, context: dict[str, Data]) -> None:
+        super().__init__(root, context)
+        self._reference = self.parse_reference(self.root)
         self._texts = self._parse_texts()
         self._params = tuple(
-            Xml.to_param(k, v, "Actions") for (k, v) in self.root.attrib.items())
-        self._modifiers = Xml.parse_modifiers(self.root)
-        self._conditions = Xml.parse_effects(self.root, "conditions")
+            self.to_param(k, v, "Actions") for (k, v) in self.root.attrib.items())
+        self._modifiers = self.parse_modifiers(self.root)
+        self._conditions = self.parse_effects(self.root, "conditions")
         self._targets = self._parse_targets()
 
     def _parse_texts(self) -> TextsMixin | None:
@@ -757,52 +763,36 @@ class _ActionSubParser(XmlParser):
         root = self.root.find("beginTargets")
         if root is None:
             return ()
-        return tuple(Xml.parse_target(el) for el in root)
+        return tuple(self.parse_target(el) for el in root)
 
     def to_data(self) -> Action:
-        return Action(self.reference, self.modifiers, self.name, self.params, self.texts,
-                      self.conditions, self.targets)
+        return Action(
+            self._reference,
+            self._modifiers,
+            self.name,
+            self._params,
+            self.texts,
+            self._conditions,
+            self._targets
+        )
 
 
 class UnitParser(XmlParser):
     ROOT_TAG = "unit"
 
-    @property
-    def group_size(self) -> int:
-        return self._group_size
-
-    @property
-    def modifiers(self) -> tuple[Modifier, ...]:
-        return self._modifiers
-
-    @property
-    def weapons(self) -> tuple[CategoryEffect, ...]:
-        return self._weapons
-
-    @property
-    def actions(self) -> tuple[Action, ...]:
-        return self._actions
-
-    @property
-    def traits(self) -> tuple[CategoryEffect, ...]:
-        return self._traits
-
-    @property
-    def reference(self) -> Origin | None:
-        return self._reference
-
-    def __init__(self, file: PathLike) -> None:
-        super().__init__(file)
-        if (self.file.parent.parent.name != "Units"
-                and self.file.parent.parent.parent.name != "Units"):
-            raise ValueError(f"Invalid input file: {self.file}")
+    def __init__(self, file: PathLike, context: dict[str, Data]) -> None:
+        super().__init__(file, context)
+        if (self.xml.file.parent.parent.name != "Units"
+                and self.xml.file.parent.parent.parent.name != "Units"):
+            raise ValueError(f"Invalid input file: {self.xml.file}")
         self._reference = self.parse_reference(self.root)
         group_el = self.root.find("group")
         self._group_size = int(group_el.attrib["size"]) if group_el is not None else 1
         self._modifiers = self.parse_modifiers(self.root)
-        self._weapons = self.parse_effects(self.root, "weapons", process_sub_effects=False)
-        self._actions = tuple(_ActionSubParser(el).to_action() for el in self.root.find("actions"))
-        self._traits = self.parse_effects(self.root, "traits")
+        self._weapons = tuple(self.parse_weapon(el) for el in self.root.find("weapons"))
+        self._actions = tuple(
+            _ActionSubParser(el, self._context).to_data() for el in self.root.find("actions"))
+        self._traits = tuple(self.parse_trait(el) for el in self.root.find("traits"))
 
     def to_data(self) -> Unit:  # override
         return Unit(
@@ -810,28 +800,35 @@ class UnitParser(XmlParser):
             self.texts.name,
             self.texts.description,
             self.texts.flavor,
-            self.reference,
-            self.modifiers,
-            self.group_size,
-            self.weapons,
-            self.actions,
-            self.traits
+            self._reference,
+            self._modifiers,
+            self._group_size,
+            self._weapons,
+            self._actions,
+            self._traits
         )
 
 
-def parse_units(sort=False) -> list[Unit]:
+def parse_units(upgrades: Iterable[Upgrade], traits: Iterable[Trait],
+                weapons: Iterable[Weapon], sort=False) -> list[Unit]:
+    context = {str(obj.category_path): obj for obj in [*upgrades, *traits, *weapons]}
     rootdir = Path(r"xml/World/Units")
-    units = [UnitParser(Path(dir_) / f).to_data() for dir_, _, files
+    units = [UnitParser(Path(dir_) / f, context).to_data() for dir_, _, files
              in os.walk(rootdir) for f in files]
+    resolved, unresolved = get_context(
+        upgrades=[*upgrades], traits=[*traits], weapons=[*weapons], units=units)
+    *_, units = dereference(resolved, unresolved)
     if sort:
         return sorted(units, key=str)
     return units
 
 
 def parse_all(sort=False) -> tuple[list[Upgrade], list[Trait], list[Weapon], list[Unit]]:
-    if sort:
-        return parse_upgrades(True), parse_traits(True), parse_weapons(True), parse_units(True)
-    return parse_upgrades(), parse_traits(), parse_weapons(), parse_units()
+    upgrades = parse_upgrades(sort=sort)
+    traits = parse_traits(upgrades, sort=sort)
+    weapons = parse_weapons(upgrades, traits, sort=sort)
+    units = parse_units(upgrades, traits, weapons, sort=sort)
+    return upgrades, traits, weapons, units
 
 
 def from_origin(origin: Origin) -> Data:
