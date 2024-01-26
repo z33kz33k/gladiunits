@@ -9,7 +9,7 @@
 """
 from collections import OrderedDict, defaultdict
 from enum import Enum
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass, fields, is_dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Literal, ClassVar, Type, TypeAlias, Union
 
@@ -137,7 +137,7 @@ class TextsMixin:
     flavor: str | None
 
 
-Data: TypeAlias = Union["Upgrade", "Trait", "Weapon", "Unit"]
+Data: TypeAlias = Union["UpgradeWrapper", "Upgrade", "Trait", "Weapon", "Unit"]
 ParamValue: TypeAlias = (Data | tuple[Data, ...] | Origin | tuple[Origin, ...] | float | int |
                          str | bool)
 
@@ -170,13 +170,13 @@ def collect_unresolved_refs(
     collected = collected or {}
 
     if is_dataclass(obj):
-        for field in fields(obj):
-            if field.name == "reference":
+        for f in fields(obj):
+            if f.name == "reference":
                 continue
-            crumbs.append(field.name)
-            value = getattr(obj, field.name)
+            crumbs.append(f.name)
+            value = getattr(obj, f.name)
 
-            if isinstance(value, tuple):
+            if isinstance(value, (tuple, list)):
                 for i, item in enumerate(value):
                     crumbs.append(str(i))
                     if is_unresolved_ref(item):
@@ -412,8 +412,8 @@ class ModifiersMixin:
 @dataclass(frozen=True)
 class Upgrade(ReferenceMixin, TextsMixin, Origin):
     tier: int
-    required_upgrades: tuple[Union["Upgrade",  Origin], ...]
     dlc: str | None
+    required_upgrades: tuple[Union["Upgrade",  Origin], ...] = field(default=())
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -429,6 +429,31 @@ class Upgrade(ReferenceMixin, TextsMixin, Origin):
     @property
     def is_resolved(self) -> bool:
         return not self.unresolved_refs
+
+    @classmethod
+    def from_wrapper(cls, wrapper: "UpgradeWrapper") -> "Upgrade":
+        upgrade = asdict(wrapper)
+        upgrade["required_upgrades"] = tuple(u for u in wrapper.required_upgrades)
+        return cls(**upgrade)
+
+
+@dataclass
+class UpgradeWrapper:
+    upgrade: Upgrade
+    required_upgrades: list[Union["Upgrade",  Origin]]
+
+    @property
+    def unresolved_refs(self) -> OrderedDict[str, Origin]:
+        return OrderedDict(sorted((k, v) for k, v in collect_unresolved_refs(self).items()))
+
+    @property
+    def is_resolved(self) -> bool:
+        return not self.unresolved_refs
+
+    def to_upgrade(self) -> Upgrade:
+        upgrade = asdict(self.upgrade)
+        upgrade["required_upgrades"] = tuple(u for u in self.required_upgrades)
+        return Upgrade(**upgrade)
 
 
 @dataclass(frozen=True)
@@ -454,19 +479,7 @@ class UpgradeableTrait(Trait):
 
     @classmethod
     def from_trait(cls, trait: Trait, required_upgrade: Upgrade) -> "UpgradeableTrait":
-        return UpgradeableTrait(
-            trait.path,
-            trait.name,
-            trait.description,
-            trait.flavor,
-            trait.reference,
-            trait.modifiers,
-            trait.type,
-            trait.target_conditions,
-            trait.max_rank,
-            trait.stacking,
-            required_upgrade
-        )
+        return cls(**asdict(trait), required_upgrade=required_upgrade)
 
 
 @dataclass(frozen=True)
@@ -518,6 +531,7 @@ class Weapon(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
         return [*super().all_effects, *self.traits] + target_effects
 
 
+# TODO: UpgradeableAction
 @dataclass(frozen=True)
 class Action(ModifiersMixin, ReferenceMixin):
     name: str
@@ -541,10 +555,12 @@ class Action(ModifiersMixin, ReferenceMixin):
 class CountedWeapon(Weapon):
     count: int
     enabled: bool
+    required_upgrade: Upgrade | None = field(default=None)
 
     @classmethod
-    def from_weapon(cls, weapon: Weapon, count: int, enabled: bool) -> "CountedWeapon":
-        return CountedWeapon(
+    def from_weapon(cls, weapon: Weapon, count: int, enabled: bool,
+                    required_upgrade: Upgrade | None = None) -> "CountedWeapon":
+        return cls(
             weapon.path,
             weapon.name,
             weapon.description,
@@ -554,8 +570,9 @@ class CountedWeapon(Weapon):
             weapon.type,
             weapon.target,
             weapon.traits,
-            count,
-            enabled,
+            count=count,
+            enabled=enabled,
+            required_upgrade=required_upgrade
         )
 
 
@@ -623,16 +640,12 @@ class Unit(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
                 if any(p.type == "requiredUpgrade" for p in a.params)]
 
     @property
-    def basic_traits(self) -> list[Origin]:
-        traits = [t for t in self.traits
-                  if not any(p.type == "requiredUpgrade" for p in t.params)]
-        return [p.value for t in traits for p in t.params if p.type == "name"]
+    def basic_traits(self) -> list[Trait]:
+        return [t for t in self.traits if not isinstance(t, UpgradeableTrait)]
 
     @property
     def upgradeable_traits(self) -> list[Origin]:
-        traits = [t for t in self.traits
-                  if any(p.type == "requiredUpgrade" for p in t.params)]
-        return [p.value for t in traits for p in t.params if p.type == "name"]
+        return [t for t in self.traits if isinstance(t, UpgradeableTrait)]
 
     # key traits
     @property

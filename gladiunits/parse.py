@@ -18,12 +18,13 @@ import lxml
 from lxml.etree import XMLSyntaxError, _Element as Element
 
 from gladiunits.constants import PathLike, T, XML_DIR
-from gladiunits.data import (Action, Area, AreaModifier, CountedWeapon, Modifier, Origin, Parameter,
+from gladiunits.data import (Action, Area, AreaModifier, CountedWeapon, Modifier, UpgradeWrapper,
+                             Origin, Parameter,
                              Data,
                              Target,
                              TextsMixin, CATEGORIES, FACTIONS, Effect, CategoryEffect, ModifierType,
                              Trait, Unit, Upgrade, UpgradeableTrait, Weapon, WeaponType)
-from gladiunits.dereference import dereference, get_context
+from gladiunits.dereference import dereference, get_context, sift_upgrades
 from gladiunits.utils import from_iterable
 
 
@@ -430,20 +431,23 @@ class XmlParser:
 
     def parse_trait(self, trait_el: Element) -> Trait | UpgradeableTrait:
         name, required_upgrade = trait_el.attrib["name"], trait_el.attrib.get("required_upgrade")
+        name = f"Traits/{name}"
         trait = self._context.get(name)
         if not trait:
             raise ValueError(f"Trait not retrievable: {name!r}")
         if required_upgrade:
+            required_upgrade = f"Upgrades/{required_upgrade}"
             upgrade = self._context.get(required_upgrade)
             if not upgrade:
-                raise ValueError(f"Upgrade not retrievable: {name!r}")
+                raise ValueError(f"Upgrade not retrievable: {required_upgrade!r}")
             return UpgradeableTrait.from_trait(trait, upgrade)
         return trait
 
     def parse_weapon(self, weapon_el: Element) -> CountedWeapon:
-        name, count, enabled = weapon_el.attrib["name"], weapon_el.attrib.get(
-            "count"), weapon_el.attrib.get("enabled")
-        valid_attrs = "name", "slotName", "count", "enabled"
+        name, count, enabled, required_upgrade = weapon_el.attrib["name"], weapon_el.attrib.get(
+            "count"), weapon_el.attrib.get("enabled"), weapon_el.attrib.get("requiredUpgrade")
+        name = f"Weapons/{name}"
+        valid_attrs = "name", "slotName", "count", "enabled", "requiredUpgrade"
         if any(attr not in valid_attrs for attr in weapon_el.attrib):
             raise ValueError(f"Unrecognized weapon attrs among: {[*weapon_el.attrib]}")
         weapon = self._context.get(name)
@@ -451,6 +455,12 @@ class XmlParser:
             raise ValueError(f"Weapon not retrievable: {name!r}")
         count = int(count) if count else 1
         enabled = True if not enabled else False
+        if required_upgrade:
+            required_upgrade = f"Upgrades/{required_upgrade}"
+            upgrade = self._context.get(required_upgrade)
+            if not upgrade:
+                raise ValueError(f"Upgrade not retrievable: {required_upgrade!r}")
+            return CountedWeapon.from_weapon(weapon, count, enabled, upgrade)
         return CountedWeapon.from_weapon(weapon, count, enabled)
 
     @staticmethod
@@ -496,24 +506,26 @@ class UpgradeParser(XmlParser):
         self._reference = self.parse_reference(self.root)
         self._tier = self.root.attrib.get("position")
         self._tier = int(self._tier) if self._tier else 0
-        self._required_upgrades = tuple(
+        self._required_upgrades = [
             Origin(Path("Upgrades") / el.attrib["name"]) for el in self.root.findall(
-                "requiredUpgrades/upgrade"))
+                "requiredUpgrades/upgrade")]
         self._dlc = self.root.attrib.get("dlc")
         if self._dlc:
             self._dlc = DISPLAYED_TEXTS.get(str(Path("WorldParameters") / self._dlc))
 
-    def to_data(self) -> Upgrade:  # override
-        return Upgrade(
+    def to_data(self) -> UpgradeWrapper | Upgrade:  # override
+        upgrade = Upgrade(
             self.origin.path,
             self.texts.name,
             self.texts.description,
             self.texts.flavor,
             self._reference,
             self._tier,
-            self._required_upgrades,
-            self._dlc
+            self._dlc,
         )
+        if self._required_upgrades:
+            return UpgradeWrapper(upgrade, self._required_upgrades)
+        return upgrade
 
 
 def parse_upgrades(sort=False) -> list[Upgrade]:
@@ -522,6 +534,7 @@ def parse_upgrades(sort=False) -> list[Upgrade]:
                 if p.is_dir() for f in p.iterdir()]
     resolved, unresolved = get_context(upgrades=upgrades)
     upgrades, *_ = dereference(resolved, unresolved)
+
     if sort:
         return sorted(upgrades, key=str)
     return upgrades
@@ -685,7 +698,9 @@ class WeaponParser(XmlParser):
         self._modifiers = self.parse_modifiers(self.root)
         self._type = self._parse_type()
         self._target = self._get_target()
-        self._traits = tuple(self.parse_trait(el) for el in self.root.find("traits"))
+        traits_el = self.root.find("traits")
+        self._traits = tuple(
+            self.parse_trait(el) for el in traits_el) if traits_el is not None else ()
 
     def _parse_type(self) -> WeaponType:
         model_el = self.root.find("model")
@@ -789,10 +804,13 @@ class UnitParser(XmlParser):
         group_el = self.root.find("group")
         self._group_size = int(group_el.attrib["size"]) if group_el is not None else 1
         self._modifiers = self.parse_modifiers(self.root)
-        self._weapons = tuple(self.parse_weapon(el) for el in self.root.find("weapons"))
+        weapons_el, traits_el = self.root.find("weapons"), self.root.find("traits")
+        self._weapons = tuple(
+            self.parse_weapon(el) for el in weapons_el) if weapons_el is not None else ()
         self._actions = tuple(
             _ActionSubParser(el, self._context).to_data() for el in self.root.find("actions"))
-        self._traits = tuple(self.parse_trait(el) for el in self.root.find("traits"))
+        self._traits = tuple(
+            self.parse_trait(el) for el in traits_el) if traits_el is not None else ()
 
     def to_data(self) -> Unit:  # override
         return Unit(

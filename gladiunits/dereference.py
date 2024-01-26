@@ -9,15 +9,27 @@
 """
 from collections import deque
 
-from gladiunits.data import Data, Trait, Unit, Upgrade, Weapon
+from gladiunits.data import Data, UpgradeWrapper, Trait, Unit, Upgrade, Weapon
 
 
-def get_context(upgrades: list[Upgrade] = (), traits: list[Trait] = (),
+def sift_upgrades(
+        *upgrades: UpgradeWrapper | Upgrade) -> tuple[list[Upgrade], list[UpgradeWrapper]]:
+    true_upgrades, wrappers = [], []
+    for u in upgrades:
+        if isinstance(u, UpgradeWrapper):
+            wrappers.append(u)
+        else:
+            true_upgrades.append(u)
+    return true_upgrades, wrappers
+
+
+def get_context(upgrades: list[UpgradeWrapper | Upgrade] = (), traits: list[Trait] = (),
                 weapons: list[Weapon] = (),
                 units: list[Unit] = ()) -> tuple[dict[str, Data], list[Data]]:
     upgrades = upgrades or []
-    upgrades.sort(key=lambda u: u.tier)
-    parsed = [*upgrades, *traits, *weapons, *units]
+    upgrades, upgrade_wrappers = sift_upgrades(*upgrades)
+    upgrade_wrappers.sort(key=lambda u: u.upgrade.tier)
+    parsed = [*upgrades, *upgrade_wrappers, *traits, *weapons, *units]
     resolved, unresolved = {}, []
     for parsed_item in parsed:
         if parsed_item.is_resolved:
@@ -48,7 +60,6 @@ class Dereferencer:
                 resolved[ref] = obj
         return resolved
 
-    # TODO: I'm here trying to mutate a tuple :/
     def resolve(self) -> None:
         for crumbs, replacer in self._resolved.items():
             current_obj = self.base
@@ -78,12 +89,18 @@ def dereference(resolved: dict[str, Data],
         deref = Dereferencer(obj, context=resolved)
         deref.resolve()
         if obj.is_resolved:
-            resolved[str(obj.category_path)] = obj
+            try:
+                resolved[str(obj.category_path)] = obj
+            except AttributeError as e:  # an upgrade wrapper
+                if "UpgradeWrapper" in str(e):
+                    resolved[str(obj.upgrade.category_path)] = obj.to_upgrade()
+                else:
+                    raise
         else:
             if ignored_categories:
                 cats = [ref.category for ref in obj.unresolved_refs.values()]
                 if all(c in ignored_categories for c in cats):
-                    stack.appendleft(obj)
+                    resolved[str(obj.category_path)] = obj
                     continue
             stack.appendleft(obj)
 
