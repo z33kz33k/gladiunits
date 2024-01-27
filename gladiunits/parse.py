@@ -7,6 +7,7 @@
     @author: z33k
 
 """
+import logging
 import os
 import re
 from abc import abstractmethod
@@ -18,14 +19,14 @@ import lxml
 from lxml.etree import XMLSyntaxError, _Element as Element
 
 from gladiunits.constants import PathLike, T, XML_DIR
-from gladiunits.data import (Action, Area, AreaModifier, CountedWeapon, Modifier, UpgradeWrapper,
-                             Origin, Parameter,
-                             Data,
-                             Target,
-                             TextsMixin, CATEGORIES, FACTIONS, Effect, CategoryEffect, ModifierType,
-                             Trait, Unit, Upgrade, UpgradeableTrait, Weapon, WeaponType)
-from gladiunits.dereference import dereference, get_context, sift_upgrades
+from gladiunits.data import (Action, Area, AreaModifier, CATEGORIES, CategoryEffect, CountedWeapon,
+                             Data, Effect, FACTIONS, Modifier, ModifierType, Origin, Parameter,
+                             Target, TextsMixin, Trait, Unit, Upgrade, UpgradeWrapper,
+                             UpgradeableTrait, Weapon, WeaponType)
+from gladiunits.dereference import dereference, get_context
 from gladiunits.utils import from_iterable
+
+_log = logging.getLogger(__name__)
 
 
 class File:
@@ -529,9 +530,11 @@ class UpgradeParser(XmlParser):
 
 
 def parse_upgrades(sort=False) -> list[Upgrade]:
+    _log.info(f"Parsing upgrades...")
     rootdir = XML_DIR / "World/Upgrades"
     upgrades = [UpgradeParser(f).to_data() for p in rootdir.iterdir()
                 if p.is_dir() for f in p.iterdir()]
+    _log.info(f"Parsed {len(upgrades)} upgrades")
     resolved, unresolved = get_context(upgrades=upgrades)
     upgrades, *_ = dereference(resolved, unresolved)
 
@@ -665,6 +668,7 @@ class TraitParser(XmlParser):
 
 
 def parse_traits(upgrades: Iterable[Upgrade], sort=False) -> list[Trait]:
+    _log.info(f"Parsing traits...")
     context = {str(u.category_path): u for u in upgrades}
     rootdir = Path(r"xml/World/Traits")
     flat = [f for f in rootdir.iterdir() if f.is_file()]
@@ -673,8 +677,10 @@ def parse_traits(upgrades: Iterable[Upgrade], sort=False) -> list[Trait]:
     for f in [*flat, *nested]:
         try:
             traits.append(TraitParser(f, context).to_data())
-        except XMLSyntaxError:
+        except XMLSyntaxError as e:
+            _log.warning(f"Skipping malformed source file: '{e}'")
             pass  # Traits/OrkoidFungusFood.xml (the body commented out)
+    _log.info(f"Parsed {len(traits)} traits")
     resolved, unresolved = get_context(upgrades=[*upgrades], traits=traits)
     _, traits, *_ = dereference(resolved, unresolved, "Weapons", "Units")
     if sort:
@@ -733,9 +739,11 @@ class WeaponParser(XmlParser):
 
 def parse_weapons(upgrades: Iterable[Upgrade], traits: Iterable[Trait],
                   sort=False) -> list[Weapon]:
+    _log.info("Parsing weapons...")
     context = {str(obj.category_path): obj for obj in [*upgrades, *traits]}
     rootdir = Path(r"xml/World/Weapons")
     weapons = [WeaponParser(f, context).to_data() for f in rootdir.iterdir()]
+    _log.info(f"Parsed {len(weapons)} weapons")
     resolved, unresolved = get_context(upgrades=[*upgrades], traits=[*traits], weapons=weapons)
     *_, weapons, _ = dereference(resolved, unresolved, "Units")
     if sort:
@@ -829,10 +837,12 @@ class UnitParser(XmlParser):
 
 def parse_units(upgrades: Iterable[Upgrade], traits: Iterable[Trait],
                 weapons: Iterable[Weapon], sort=False) -> list[Unit]:
+    _log.info("Parsing units...")
     context = {str(obj.category_path): obj for obj in [*upgrades, *traits, *weapons]}
     rootdir = Path(r"xml/World/Units")
     units = [UnitParser(Path(dir_) / f, context).to_data() for dir_, _, files
              in os.walk(rootdir) for f in files]
+    _log.info(f"Parsed {len(units)} units")
     resolved, unresolved = get_context(
         upgrades=[*upgrades], traits=[*traits], weapons=[*weapons], units=units)
     *_, units = dereference(resolved, unresolved)
@@ -846,6 +856,8 @@ def parse_all(sort=False) -> tuple[list[Upgrade], list[Trait], list[Weapon], lis
     traits = parse_traits(upgrades, sort=sort)
     weapons = parse_weapons(upgrades, traits, sort=sort)
     units = parse_units(upgrades, traits, weapons, sort=sort)
+    total = sum(1 for _ in [*upgrades, *traits, *weapons, *units])
+    _log.info(f"All parsing complete. Total {total} objects parsed")
     return upgrades, traits, weapons, units
 
 

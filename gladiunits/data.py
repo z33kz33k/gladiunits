@@ -297,6 +297,11 @@ class Effect:
     def is_negative(self) -> bool:
         return len(self.name) > 3 and self.name.startswith("no") and self.name[2].isupper()
 
+    @property
+    def is_heal(self) -> bool:
+        return self.name == "hitpoints" and any(
+            p.type in ("add", "addMin", "addMax") for p in self.params)
+
 
 @dataclass(frozen=True)
 class CategoryEffect(Effect):
@@ -372,8 +377,12 @@ class Modifier:
         return OrderedDict(sorted((k, v) for k, v in collect_unresolved_refs(self).items()))
 
     @property
-    def is_unresolved(self) -> bool:
+    def is_resolved(self) -> bool:
         return not self.unresolved_refs
+
+    @property
+    def is_heal(self) -> bool:
+        return any(e.is_heal for e in self.effects)
 
 
 @dataclass(frozen=True)
@@ -494,6 +503,10 @@ class Target(ModifiersMixin):
     def all_effects(self) -> list[Effect]:  # override
         return [*self.conditions, *super().all_effects]
 
+    @property
+    def is_heal(self) -> bool:
+        return any(m.is_heal for m in self.modifiers)
+
 
 class WeaponType(Enum):
     BEAM = 'beamWeapon'
@@ -531,7 +544,6 @@ class Weapon(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
         return [*super().all_effects, *self.traits] + target_effects
 
 
-# TODO: UpgradeableAction
 @dataclass(frozen=True)
 class Action(ModifiersMixin, ReferenceMixin):
     name: str
@@ -549,6 +561,31 @@ class Action(ModifiersMixin, ReferenceMixin):
     def is_simple(self) -> bool:
         return all(
             not item for item in (self.params, self.modifiers, self.conditions, self.targets))
+
+    @property
+    def is_elaborate(self) -> bool:
+        return not self.is_simple
+
+    @property
+    def required_upgrade(self) -> Origin | Upgrade | None:
+        return from_iterable(self.params, lambda p: p.type == "required_upgrade")
+
+    @property
+    def is_upgradeable(self) -> bool:
+        return self.required_upgrade is not None
+
+    @property
+    def is_basic(self) -> bool:
+        return not self.is_upgradeable
+
+    @property
+    def is_heal(self) -> bool:
+        return bool([t for t in self.targets if t.is_heal])
+
+    @property
+    def is_self_heal(self) -> bool:
+        healing_targets = [t for t in self.targets if t.is_heal]
+        return any(t.is_self_target for t in healing_targets)
 
 
 @dataclass(frozen=True)
@@ -575,6 +612,14 @@ class CountedWeapon(Weapon):
             required_upgrade=required_upgrade
         )
 
+    @property
+    def is_upgradeable(self) -> bool:
+        return self.required_upgrade is not None
+
+    @property
+    def is_basic(self) -> bool:
+        return not self.is_upgradeable
+
 
 @dataclass(frozen=True)
 class Unit(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
@@ -590,8 +635,10 @@ class Unit(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
 
     @property
     def all_effects(self) -> list[Effect]:  # override
+        weapon_effects = [e for w in self.weapons for e in w.all_effects]
         action_effects = [e for a in self.actions for e in a.all_effects]
-        return [*super().all_effects, *self.weapons, *action_effects, *self.traits]
+        trait_effects = [e for t in self.traits for e in t.all_effects]
+        return [*super().all_effects, *weapon_effects, *action_effects, *trait_effects]
 
     def _get_key_property(self, name: str, convert_to: Type = None) -> ParamValue | None:
         effect = from_iterable(self.mod_effects, lambda e: e.name == name)
@@ -627,17 +674,15 @@ class Unit(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
 
     @property
     def elaborate_actions(self) -> list[Action]:
-        return [a for a in self.actions if not a.is_simple]
+        return [a for a in self.actions if a.is_elaborate]
 
     @property
     def basic_actions(self) -> list[Action]:
-        return [a for a in self.elaborate_actions
-                if not any(p.type == "requiredUpgrade" for p in a.params)]
+        return [a for a in self.elaborate_actions if a.is_basic]
 
     @property
     def upgradeable_actions(self) -> list[Action]:
-        return [a for a in self.elaborate_actions
-                if any(p.type == "requiredUpgrade" for p in a.params)]
+        return [a for a in self.elaborate_actions if a.is_upgradeable]
 
     @property
     def basic_traits(self) -> list[Trait]:
@@ -647,7 +692,7 @@ class Unit(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
     def upgradeable_traits(self) -> list[Origin]:
         return [t for t in self.traits if isinstance(t, UpgradeableTrait)]
 
-    # key traits
+    # classification traits
     @property
     def is_vehicle(self) -> bool:
         return any(str(t.category_path) == "Traits/Vehicle" for t in self.basic_traits)
@@ -705,11 +750,17 @@ class Unit(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
     def is_tile_cleaner(self) -> bool:
         return any("clearTile" in a.name for a in self.elaborate_actions)
 
-    # TODO: needs distinguishing a healing action among the parsed actions (based on
-    #  'sound="Actions/Heal"' and other details (valid targets)
-    # @property
-    # def is_healer(self) -> bool:
-    #     pass
+    @property
+    def is_healer(self) -> bool:
+        return any(a.is_heal for a in self.elaborate_actions)
+
+    @property
+    def is_self_healer(self) -> bool:
+        return any(a.is_self_heal for a in self.elaborate_actions)
+
+    @property
+    def is_others_healer(self) -> bool:
+        return self.is_healer and not self.is_self_healer
 
 
 def get_mod_effects(objects: list[Data | Action], most_numerous_first=False

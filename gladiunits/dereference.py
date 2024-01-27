@@ -7,9 +7,12 @@
     @author: z33k
 
 """
+import logging
 from collections import deque
 
 from gladiunits.data import Data, UpgradeWrapper, Trait, Unit, Upgrade, Weapon
+
+_log = logging.getLogger(__name__)
 
 
 def sift_upgrades(
@@ -82,6 +85,7 @@ class Dereferencer:
 def dereference(resolved: dict[str, Data],
                 unresolved: list[Data], *ignored_categories: str
                 ) -> tuple[list[Upgrade], list[Trait], list[Weapon], list[Unit]]:
+    _log.info(f"Dereferencing {len(unresolved)} objects...")
     stack = unresolved[::-1]
     stack = deque(stack)
     while stack:
@@ -95,6 +99,7 @@ def dereference(resolved: dict[str, Data],
                 if "UpgradeWrapper" in str(e):
                     resolved[str(obj.upgrade.category_path)] = obj.to_upgrade()
                 else:
+                    _log.error(str(e))
                     raise
         else:
             if ignored_categories:
@@ -118,4 +123,5 @@ def dereference(resolved: dict[str, Data],
     for lst in upgrades, traits, weapons, units:
         lst.sort(key=str)
 
+    _log.info(f"Dereferencing complete")
     return upgrades, traits, weapons, units
