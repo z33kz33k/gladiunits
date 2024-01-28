@@ -173,12 +173,15 @@ def _parse_displayed_texts() -> dict[str, str]:
 DISPLAYED_TEXTS = _parse_displayed_texts()
 
 
-def get_texts(origin: Origin) -> TextsMixin:
-    path = origin.category_path
-    name = DISPLAYED_TEXTS[str(path)]
-    desc = DISPLAYED_TEXTS.get(f"{str(path)}Description")
-    flavor = DISPLAYED_TEXTS.get(f"{str(path)}Flavor")
-    return TextsMixin(name, desc, flavor)
+def get_texts(origin: Origin) -> TextsMixin | None:
+    try:
+        path = origin.category_path
+        name = DISPLAYED_TEXTS[str(path)]
+        desc = DISPLAYED_TEXTS.get(f"{str(path)}Description")
+        flavor = DISPLAYED_TEXTS.get(f"{str(path)}Flavor")
+        return TextsMixin(name, desc, flavor)
+    except KeyError:
+        return None
 
 
 class Xml(File):
@@ -753,34 +756,42 @@ def parse_weapons(upgrades: Iterable[Upgrade], traits: Iterable[Trait],
 
 class _ActionSubParser(XmlParser):
     @property
-    def name(self) -> str:
+    def name(self) -> str:  # override
         return self.root.tag
 
-    def __init__(self, root: Element, context: dict[str, Data]) -> None:
+    @property
+    def texts(self) -> TextsMixin | None:  # override
+        return self._texts
+
+    def __init__(self, root: Element, context: dict[str, Data], faction: str) -> None:
         super().__init__(root, context)
         self._reference = self.parse_reference(self.root)
-        self._texts = self._parse_texts()
+        self._texts = self._parse_texts(faction)
         self._params = tuple(
             self.to_param(k, v, "Actions") for (k, v) in self.root.attrib.items())
         self._modifiers = self.parse_modifiers(self.root)
         self._conditions = self.parse_effects(self.root, "conditions")
         self._targets = self._parse_targets()
 
-    def _parse_texts(self) -> TextsMixin | None:
+    def _parse_texts(self, faction: str) -> TextsMixin | None:
         path = self.root.attrib.get("name")
         if not path:
-            return None
-        try:
-            return get_texts(Origin(Path("Actions") / path))
-        except KeyError:
-            try:
-                return get_texts(Origin(Path("Traits") / path))
-            except KeyError:
-                if any("weapon" in attr for attr in self.root.attrib):
-                    if "/" in path:
-                        faction, name = path.split("/")
-                        return get_texts(Origin(Path("Weapons") / name))
-                return None
+            name = self.name[0].upper() + self.name[1:]
+            t = get_texts(Origin(Path("Actions") / name))
+            if t:
+                return t
+            return get_texts(Origin(Path("Actions") / faction / name))
+        t = get_texts(Origin(Path("Actions") / path))
+        if t:
+            return t
+        t = get_texts(Origin(Path("Traits") / path))
+        if t:
+            return t
+        if any("weapon" in attr for attr in self.root.attrib):
+            if "/" in path:
+                faction, name = path.split("/")
+                return get_texts(Origin(Path("Weapons") / name))
+        return None
 
     def _parse_targets(self) -> tuple[Target, ...]:
         root = self.root.find("beginTargets")
@@ -816,7 +827,8 @@ class UnitParser(XmlParser):
         self._weapons = tuple(
             self.parse_weapon(el) for el in weapons_el) if weapons_el is not None else ()
         self._actions = tuple(
-            _ActionSubParser(el, self._context).to_data() for el in self.root.find("actions"))
+            _ActionSubParser(el, self._context, self.faction).to_data() for el in self.root.find(
+                "actions"))
         self._traits = tuple(
             self.parse_trait(el) for el in traits_el) if traits_el is not None else ()
 

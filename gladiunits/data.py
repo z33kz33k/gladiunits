@@ -129,6 +129,9 @@ class Origin:
     def __str__(self) -> str:
         return str(self.path)
 
+    def matches(self, category_path: str) -> bool:
+        return str(self.category_path) == category_path
+
 
 @dataclass(frozen=True)
 class TextsMixin:
@@ -299,8 +302,9 @@ class Effect:
 
     @property
     def is_heal(self) -> bool:
-        return self.name == "hitpoints" and any(
-            p.type in ("add", "addMin", "addMax") for p in self.params)
+        heal_param = from_iterable(
+            self.params, lambda p: p.type in ("add", "addMin", "addMax"))
+        return self.name == "hitpoints" and heal_param and heal_param.value > 0
 
 
 @dataclass(frozen=True)
@@ -328,6 +332,42 @@ class CategoryEffect(Effect):
     @property
     def category(self) -> str:
         return self.get_category(self.name)
+
+    def applies_to_cat_and_trait(self, category: str, trait: str) -> bool:
+        if self.category != category:
+            return False
+        for se in self.sub_effects:
+            if se.name == "trait":
+                for p in se.params:
+                    if isinstance(p.value, Trait) and p.value.matches(trait):
+                        return True
+        return False
+
+    def applies_to_cat_and_no_trait(self, category: str, trait: str) -> bool:
+        if self.category != category:
+            return False
+        for se in self.sub_effects:
+            if se.name == "noTrait":
+                for p in se.params:
+                    if isinstance(p.value, Trait) and p.value.matches(trait):
+                        return True
+        return False
+
+    @property
+    def applies_to_vehicles(self) -> bool:
+        return self.applies_to_cat_and_trait("Units", "Traits/Vehicle")
+
+    @property
+    def applies_to_fortifications(self) -> bool:
+        return self.applies_to_cat_and_trait("Units", "Traits/Fortification")
+
+    @property
+    def applies_to_non_vehicles(self) -> bool:
+        return self.applies_to_cat_and_no_trait("Units", "Traits/Vehicle")
+
+    @property
+    def applies_to_non_fortifications(self) -> bool:
+        return self.applies_to_cat_and_no_trait("Units", "Traits/Fortification")
 
 
 class ModifierType(Enum):
@@ -431,6 +471,12 @@ class Upgrade(ReferenceMixin, TextsMixin, Origin):
         if self.tier not in range(11):
             raise ValueError("tier must be an integer between 0 and 10")
 
+    def __hash__(self) -> int:
+        return hash(str(self.path))
+
+    def __eq__(self, other: "Upgrade") -> bool:
+        return str(self.path) == str(other.path)
+
     @property
     def unresolved_refs(self) -> OrderedDict[str, Origin]:
         return OrderedDict(sorted((k, v) for k, v in collect_unresolved_refs(self).items()))
@@ -477,6 +523,12 @@ class Trait(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
         if self.category != "Traits":
             raise ValueError(f"not a path to a trait .xml: {self.path}")
 
+    def __hash__(self) -> int:
+        return hash(str(self.path))
+
+    def __eq__(self, other: "Upgrade") -> bool:
+        return str(self.path) == str(other.path)
+
     @property
     def all_effects(self) -> list[Effect]:  # override
         return [*self.target_conditions, *super().all_effects]
@@ -506,6 +558,18 @@ class Target(ModifiersMixin):
     @property
     def is_heal(self) -> bool:
         return any(m.is_heal for m in self.modifiers)
+
+    @property
+    def is_organic_only_heal(self) -> bool:
+        return self.is_heal and any(
+            c.applies_to_non_vehicles and c.applies_to_non_fortifications
+            for c in self.conditions if isinstance(c, CategoryEffect))
+
+    @property
+    def is_mechanical_only_heal(self) -> bool:
+        return self.is_heal and any(
+            c.applies_to_vehicles and c.applies_to_fortifications
+            for c in self.conditions if isinstance(c, CategoryEffect))
 
 
 class WeaponType(Enum):
@@ -538,6 +602,12 @@ class Weapon(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
         if self.category != "Weapons":
             raise ValueError(f"not a path to a weapon .xml: {self.path}")
 
+    def __hash__(self) -> int:
+        return hash(str(self.path))
+
+    def __eq__(self, other: "Upgrade") -> bool:
+        return str(self.path) == str(other.path)
+
     @property
     def all_effects(self) -> list[Effect]:  # override
         target_effects = self.target.all_effects if self.target else []
@@ -551,6 +621,12 @@ class Action(ModifiersMixin, ReferenceMixin):
     texts: TextsMixin | None
     conditions: tuple[Effect, ...]
     targets: tuple[Target, ...]
+
+    def __hash__(self) -> int:
+        return hash((self.name, self.texts))
+
+    def __eq__(self, other: "Action") -> bool:
+        return (self.name, self.texts) == (other.name, other.texts)
 
     @property
     def all_effects(self) -> list[Effect]:  # override
@@ -580,12 +656,30 @@ class Action(ModifiersMixin, ReferenceMixin):
 
     @property
     def is_heal(self) -> bool:
-        return bool([t for t in self.targets if t.is_heal])
+        return any(t.is_heal for t in self.targets)
 
     @property
     def is_self_heal(self) -> bool:
         healing_targets = [t for t in self.targets if t.is_heal]
         return any(t.is_self_target for t in healing_targets)
+
+    @property
+    def is_organic_only_heal(self) -> bool:
+        for t in self.targets:
+            if t.is_organic_only_heal:
+                return True
+        return False
+
+    @property
+    def is_mechanical_only_heal(self) -> bool:
+        for t in self.targets:
+            if t.is_mechanical_only_heal:
+                return True
+        return False
+
+    @property
+    def is_weapon_action(self) -> bool:
+        return any(p.type == "weaponSlotName" for p in self.params)
 
 
 @dataclass(frozen=True)
@@ -632,6 +726,12 @@ class Unit(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
         super().__post_init__()
         if self.category != "Units":
             raise ValueError(f"not a path to an unit .xml: {self.path}")
+
+    def __hash__(self) -> int:
+        return hash(str(self.path))
+
+    def __eq__(self, other: "Upgrade") -> bool:
+        return str(self.path) == str(other.path)
 
     @property
     def all_effects(self) -> list[Effect]:  # override
@@ -695,47 +795,67 @@ class Unit(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
     # classification traits
     @property
     def is_vehicle(self) -> bool:
-        return any(str(t.category_path) == "Traits/Vehicle" for t in self.basic_traits)
+        return any(t.matches("Traits/Vehicle") for t in self.basic_traits)
 
     @property
     def is_tank(self) -> bool:  # subset of vehicles
-        return any(str(t.category_path) == "Traits/Tank" for t in self.basic_traits)
+        return any(t.matches("Traits/Tank") for t in self.basic_traits)
 
     @property
     def is_fortification(self) -> bool:  # most are transports too (hold cargo)
-        return any(str(t.category_path) == "Traits/Fortification" for t in self.basic_traits)
+        return any(t.matches("Traits/Fortification") for t in self.basic_traits)
 
     @property
     def is_transport(self) -> bool:  # most are vehicles (apart from 2 monstrous creatures)
-        return any(str(t.category_path) == "Traits/Transport" for t in self.basic_traits)
+        return any(t.matches("Traits/Transport") for t in self.basic_traits)
 
     @property
     def is_hero(self) -> bool:
-        return any(str(t.category_path) == "Traits/Hero" for t in self.basic_traits)
+        return any(t.matches("Traits/Hero") for t in self.basic_traits)
 
     @property
     def is_monstrous_creature(self) -> bool:
-        return any(str(t.category_path) == "Traits/MonstrousCreature" for t in self.basic_traits)
+        return any(t.matches("Traits/MonstrousCreature") for t in self.basic_traits)
 
     @property
     def is_walker(self) -> bool:  # subset of vehicles
-        return any(str(t.category_path) == "Traits/Walker" for t in self.basic_traits)
+        return any(t.matches("Traits/Walker") for t in self.basic_traits)
 
     @property
     def is_bike(self) -> bool:
-        return any(str(t.category_path) == "Traits/Bike" for t in self.basic_traits)
+        return any(t.matches("Traits/Bike") for t in self.basic_traits)
 
     @property
     def is_jetbike(self) -> bool:
-        return any(str(t.category_path) == "Traits/Jetbike" for t in self.basic_traits)
+        return any(t.matches("Traits/Jetbike") for t in self.basic_traits)
 
     @property
     def is_flyer(self) -> bool:  # subset of vehicles
-        return any(str(t.category_path) == "Traits/Flyer" for t in self.basic_traits)
+        return any(t.matches("Traits/Flyer") for t in self.basic_traits)
 
     @property
     def is_infantry(self) -> bool:  # based on Painboy healing
         return not self.is_fortification and not self.is_vehicle and not self.is_monstrous_creature
+
+    @property
+    def is_mechanical(self) -> bool:  # important for healing
+        return self.is_vehicle or self.is_fortification
+
+    @property
+    def is_organic(self) -> bool:  # important for healing
+        return not self.is_mechanical
+
+    @property
+    def is_open_topped(self) -> bool:
+        return any(t.matches("Traits/OpenTopped") for t in self.basic_traits)
+
+    @property
+    def is_gargantuan(self) -> bool:
+        return any(t.matches("Traits/Gargantuan") for t in self.basic_traits)
+
+    @property
+    def is_psyker(self) -> bool:
+        return any(t.matches("Traits/Psyker") for t in self.basic_traits)
 
     # action-based traits
     @property
@@ -761,6 +881,14 @@ class Unit(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
     @property
     def is_others_healer(self) -> bool:
         return self.is_healer and not self.is_self_healer
+
+    @property
+    def is_organic_only_healer(self) -> bool:
+        return any(a.is_organic_only_heal for a in self.elaborate_actions)
+
+    @property
+    def is_mechanical_only_healer(self) -> bool:
+        return any(a.is_mechanical_only_heal for a in self.elaborate_actions)
 
 
 def get_mod_effects(objects: list[Data | Action], most_numerous_first=False

@@ -73,6 +73,7 @@ class Dereferencer:
                     if token.isdigit():
                         current_obj[int(token)] = replacer
                     else:
+                        # mutating frozen dataclasses, nothing to see here, move along... :)
                         current_obj.__dict__[token] = replacer
                     break
 
