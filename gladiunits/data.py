@@ -9,7 +9,7 @@
 """
 from collections import OrderedDict, defaultdict
 from enum import Enum
-from dataclasses import dataclass, fields, is_dataclass, field, asdict
+from dataclasses import dataclass, fields, is_dataclass, field
 from pathlib import Path
 from typing import Any, Literal, ClassVar, Type, TypeAlias, Union
 
@@ -458,6 +458,7 @@ class ModifiersMixin:
         return not self.unresolved_refs
 
 
+# TODO: add `tier` property to units based on corresponding upgrade
 @dataclass(frozen=True)
 class Upgrade(ReferenceMixin, TextsMixin, Origin):
     tier: int
@@ -485,12 +486,6 @@ class Upgrade(ReferenceMixin, TextsMixin, Origin):
     def is_resolved(self) -> bool:
         return not self.unresolved_refs
 
-    @classmethod
-    def from_wrapper(cls, wrapper: "UpgradeWrapper") -> "Upgrade":
-        upgrade = asdict(wrapper)
-        upgrade["required_upgrades"] = tuple(u for u in wrapper.required_upgrades)
-        return cls(**upgrade)
-
 
 @dataclass
 class UpgradeWrapper:
@@ -506,9 +501,16 @@ class UpgradeWrapper:
         return not self.unresolved_refs
 
     def to_upgrade(self) -> Upgrade:
-        upgrade = asdict(self.upgrade)
-        upgrade["required_upgrades"] = tuple(u for u in self.required_upgrades)
-        return Upgrade(**upgrade)
+        return Upgrade(
+            path=self.upgrade.path,
+            name=self.upgrade.name,
+            description=self.upgrade.description,
+            flavor=self.upgrade.flavor,
+            reference=self.upgrade.reference,
+            tier=self.upgrade.tier,
+            dlc=self.upgrade.dlc,
+            required_upgrades=tuple(u for u in self.required_upgrades)
+        )
 
 
 @dataclass(frozen=True)
@@ -540,7 +542,19 @@ class UpgradeableTrait(Trait):
 
     @classmethod
     def from_trait(cls, trait: Trait, required_upgrade: Upgrade) -> "UpgradeableTrait":
-        return cls(**asdict(trait), required_upgrade=required_upgrade)
+        return cls(
+            path=trait.path,
+            name=trait.name,
+            description=trait.description,
+            flavor=trait.flavor,
+            reference=trait.reference,
+            modifiers=trait.modifiers,
+            type=trait.type,
+            target_conditions=trait.target_conditions,
+            max_rank=trait.max_rank,
+            stacking=trait.stacking,
+            required_upgrade=required_upgrade,
+        )
 
 
 @dataclass(frozen=True)
@@ -822,7 +836,7 @@ class Unit(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
         return any(t.matches("Traits/Walker") for t in self.basic_traits)
 
     @property
-    def is_bike(self) -> bool:
+    def is_bike(self) -> bool:  # only two
         return any(t.matches("Traits/Bike") for t in self.basic_traits)
 
     @property
@@ -832,6 +846,30 @@ class Unit(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
     @property
     def is_flyer(self) -> bool:  # subset of vehicles
         return any(t.matches("Traits/Flyer") for t in self.basic_traits)
+
+    @property
+    def is_skimmer(self) -> bool:
+        return any(t.matches("Traits/Skimmer") for t in self.basic_traits)
+
+    @property
+    def is_open_topped(self) -> bool:  # subset of vehicles
+        return any(t.matches("Traits/OpenTopped") for t in self.basic_traits)
+
+    @property
+    def is_gargantuan(self) -> bool:
+        return any(t.matches("Traits/Gargantuan") for t in self.basic_traits)
+
+    @property
+    def is_psyker(self) -> bool:
+        return any(t.matches("Traits/Psyker") for t in self.basic_traits)
+
+    @property
+    def is_daemon(self) -> bool:
+        return any(t.matches("Traits/Daemon") for t in self.basic_traits)
+
+    @property
+    def is_amphibious(self) -> bool:  # only one (Chimera)
+        return any(t.matches("Traits/Amphibious") for t in self.basic_traits)
 
     @property
     def is_infantry(self) -> bool:  # based on Painboy healing
@@ -844,18 +882,6 @@ class Unit(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
     @property
     def is_organic(self) -> bool:  # important for healing
         return not self.is_mechanical
-
-    @property
-    def is_open_topped(self) -> bool:
-        return any(t.matches("Traits/OpenTopped") for t in self.basic_traits)
-
-    @property
-    def is_gargantuan(self) -> bool:
-        return any(t.matches("Traits/Gargantuan") for t in self.basic_traits)
-
-    @property
-    def is_psyker(self) -> bool:
-        return any(t.matches("Traits/Psyker") for t in self.basic_traits)
 
     # action-based traits
     @property
@@ -889,6 +915,15 @@ class Unit(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
     @property
     def is_mechanical_only_healer(self) -> bool:
         return any(a.is_mechanical_only_heal for a in self.elaborate_actions)
+
+    @property
+    def is_settler(self) -> bool:
+        return any(a.name == "foundCity" for a in self.elaborate_actions)
+
+    @property
+    def is_skirmisher(self) -> bool:
+        return any(a.name == "jink" for a in self.elaborate_actions) and any(
+            a.name == "turboBoost" for a in self.elaborate_actions)
 
 
 def get_mod_effects(objects: list[Data | Action], most_numerous_first=False

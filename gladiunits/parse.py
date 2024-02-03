@@ -434,7 +434,7 @@ class XmlParser:
         return Target(modifiers, is_self_target, max_range, min_range, line_of_sight, conditions)
 
     def parse_trait(self, trait_el: Element) -> Trait | UpgradeableTrait:
-        name, required_upgrade = trait_el.attrib["name"], trait_el.attrib.get("required_upgrade")
+        name, required_upgrade = trait_el.attrib["name"], trait_el.attrib.get("requiredUpgrade")
         name = f"Traits/{name}"
         trait = self._context.get(name)
         if not trait:
