@@ -22,7 +22,7 @@ from gladiunits.constants import PathLike, T, XML_DIR
 from gladiunits.data import (Action, Area, AreaModifier, CATEGORIES, CategoryEffect, CountedWeapon,
                              Data, Effect, FACTIONS, Modifier, ModifierType, Origin, Parameter,
                              Target, TextsMixin, Trait, Unit, Upgrade, UpgradeWrapper,
-                             UpgradeableTrait, Weapon, WeaponType)
+                             UpgradeRequiringTrait, Weapon, WeaponType)
 from gladiunits.dereference import dereference, get_context
 from gladiunits.utils import from_iterable
 
@@ -345,10 +345,7 @@ class XmlParser:
             attr_category = CategoryEffect.get_category(attr)
 
             if attr_category == "Weapons":
-                alias = WeaponParser.ALIASES.get(value)
-                if alias:
-                    v = Origin(Path(attr_category) / alias)
-                    return Parameter(attr, self._get_context_value(v))
+                value = WeaponParser.get_name(value)
 
             v = Origin(Path(attr_category) / value)
             return Parameter(attr, self._get_context_value(v))
@@ -376,14 +373,25 @@ class XmlParser:
             for el in parent_element.findall(container_xpath)
             for sub_el in el)
 
-    def parse_modifier(
+    def parse_required_upgrade(self, element: Element) -> Upgrade | None:
+        required_upgrade = element.attrib.get("requiredUpgrade")
+        if required_upgrade:
+            required_upgrade = f"Upgrades/{required_upgrade}"
+            upgrade = self._context.get(required_upgrade)
+            if not upgrade:
+                raise ValueError(f"Upgrade not retrievable: {required_upgrade!r}")
+            return upgrade
+        return None
+
+    def _parse_modifier(
             self, modifier_el: Element, type_: ModifierType,
             area: Area = None) -> Modifier | AreaModifier:
         effects = self.parse_effects(modifier_el)
         conditions = self.parse_effects(modifier_el, "conditions")
+        required_upgrade = self.parse_required_upgrade(modifier_el)
         if area:
-            return AreaModifier(type_, conditions, effects, area)
-        return Modifier(type_, conditions, effects)
+            return AreaModifier(type_, conditions, effects, required_upgrade, area)
+        return Modifier(type_, conditions, effects, required_upgrade)
 
     def parse_modifiers(self, root: Element) -> tuple[Modifier | AreaModifier, ...]:
         modifier_tags = {*{mod_type.value for mod_type in ModifierType}, "areas"}
@@ -394,19 +402,19 @@ class XmlParser:
             for sub_el in el:
                 # area modifiers
                 if sub_el.tag == "area":
-                    area = self.parse_area(sub_el)
+                    area = self._parse_area(sub_el)
                     for modifier_el in sub_el.findall(".//modifier"):
-                        modifiers.append(self.parse_modifier(modifier_el, type_, area))
+                        modifiers.append(self._parse_modifier(modifier_el, type_, area))
                 elif sub_el.tag == "modifier":
-                    modifiers.append(self.parse_modifier(sub_el, type_))
+                    modifiers.append(self._parse_modifier(sub_el, type_))
                 else:
                     for modifier_el in sub_el.findall(".//modifier"):
-                        modifiers.append(self.parse_modifier(modifier_el, type_))
+                        modifiers.append(self._parse_modifier(modifier_el, type_))
 
         return tuple(modifiers)
 
     @staticmethod
-    def parse_area(area_el: Element) -> Area:
+    def _parse_area(area_el: Element) -> Area:
         radius = area_el.attrib.get("radius")
         exclude_radius = area_el.attrib.get("excludeRadius")
         return Area(
@@ -426,46 +434,23 @@ class XmlParser:
 
     def parse_target(self, target_el: Element) -> Target:
         is_self_target = "self" in target_el.tag
-        max_range = self.get_value_from_attr(target_el, "rangeMax", int)
-        min_range = self.get_value_from_attr(target_el, "rangeMin", int)
-        line_of_sight = self.get_value_from_attr(target_el, "lineOfSight", int)
+        max_range = self._get_value_from_attr(target_el, "rangeMax", int)
+        min_range = self._get_value_from_attr(target_el, "rangeMin", int)
+        line_of_sight = self._get_value_from_attr(target_el, "lineOfSight", int)
         conditions = self.parse_effects(target_el, "conditions")
         modifiers = self.parse_modifiers(target_el)
         return Target(modifiers, is_self_target, max_range, min_range, line_of_sight, conditions)
 
-    def parse_trait(self, trait_el: Element) -> Trait | UpgradeableTrait:
-        name, required_upgrade = trait_el.attrib["name"], trait_el.attrib.get("requiredUpgrade")
+    def parse_trait(self, trait_el: Element) -> Trait | UpgradeRequiringTrait:
+        name = trait_el.attrib["name"]
         name = f"Traits/{name}"
         trait = self._context.get(name)
         if not trait:
             raise ValueError(f"Trait not retrievable: {name!r}")
+        required_upgrade = self.parse_required_upgrade(trait_el)
         if required_upgrade:
-            required_upgrade = f"Upgrades/{required_upgrade}"
-            upgrade = self._context.get(required_upgrade)
-            if not upgrade:
-                raise ValueError(f"Upgrade not retrievable: {required_upgrade!r}")
-            return UpgradeableTrait.from_trait(trait, upgrade)
+            return UpgradeRequiringTrait.from_trait(trait, required_upgrade)
         return trait
-
-    def parse_weapon(self, weapon_el: Element) -> CountedWeapon:
-        name, count, enabled, required_upgrade = weapon_el.attrib["name"], weapon_el.attrib.get(
-            "count"), weapon_el.attrib.get("enabled"), weapon_el.attrib.get("requiredUpgrade")
-        name = f"Weapons/{name}"
-        valid_attrs = "name", "slotName", "count", "enabled", "requiredUpgrade"
-        if any(attr not in valid_attrs for attr in weapon_el.attrib):
-            raise ValueError(f"Unrecognized weapon attrs among: {[*weapon_el.attrib]}")
-        weapon = self._context.get(name)
-        if not weapon:
-            raise ValueError(f"Weapon not retrievable: {name!r}")
-        count = int(count) if count else 1
-        enabled = True if not enabled else False
-        if required_upgrade:
-            required_upgrade = f"Upgrades/{required_upgrade}"
-            upgrade = self._context.get(required_upgrade)
-            if not upgrade:
-                raise ValueError(f"Upgrade not retrievable: {required_upgrade!r}")
-            return CountedWeapon.from_weapon(weapon, count, enabled, upgrade)
-        return CountedWeapon.from_weapon(weapon, count, enabled)
 
     @staticmethod
     def get_value(element: Element | None, xpath: str, value_type: T) -> T | None:
@@ -477,7 +462,7 @@ class XmlParser:
         return value_type(sub_el.text)
 
     @staticmethod
-    def get_value_from_attr(element: Element | None, attr: str, value_type: T) -> T | None:
+    def _get_value_from_attr(element: Element | None, attr: str, value_type: T) -> T | None:
         if element is None:
             return None
         value = element.attrib.get(attr)
@@ -726,6 +711,10 @@ class WeaponParser(XmlParser):
             return None
         return self.parse_target(target_el)
 
+    @classmethod
+    def get_name(cls, weapon_name: str) -> str:
+        return cls.ALIASES.get(weapon_name, weapon_name)
+
     def to_data(self) -> Weapon:  # override
         return Weapon(
             self.origin.path,
@@ -768,10 +757,13 @@ class _ActionSubParser(XmlParser):
         self._reference = self.parse_reference(self.root)
         self._texts = self._parse_texts(faction)
         self._params = tuple(
-            self.to_param(k, v, "Actions") for (k, v) in self.root.attrib.items())
+            self.to_param(k, v, "Actions") for (k, v) in self.root.attrib.items()
+            if k not in ("requiredUpgrade", "weaponSlotName"))
         self._modifiers = self.parse_modifiers(self.root)
         self._conditions = self.parse_effects(self.root, "conditions")
         self._targets = self._parse_targets()
+        self._required_upgrade = self.parse_required_upgrade(self.root)
+        self._required_weapon = self._parse_required_weapon()
 
     def _parse_texts(self, faction: str) -> TextsMixin | None:
         path = self.root.attrib.get("name")
@@ -799,6 +791,16 @@ class _ActionSubParser(XmlParser):
             return ()
         return tuple(self.parse_target(el) for el in root)
 
+    def _parse_required_weapon(self) -> Weapon | None:
+        name = self.root.attrib.get("weaponSlotName")
+        if not name:
+            return None
+        name = f"Weapons/{WeaponParser.get_name(name)}"
+        weapon = self._context.get(name)
+        if not weapon:
+            raise ValueError(f"Weapon not retrievable: {name!r}")
+        return weapon
+
     def to_data(self) -> Action:
         return Action(
             self._reference,
@@ -807,7 +809,9 @@ class _ActionSubParser(XmlParser):
             self._params,
             self.texts,
             self._conditions,
-            self._targets
+            self._targets,
+            self._required_upgrade,
+            self._required_weapon,
         )
 
 
@@ -825,12 +829,27 @@ class UnitParser(XmlParser):
         self._modifiers = self.parse_modifiers(self.root)
         weapons_el, traits_el = self.root.find("weapons"), self.root.find("traits")
         self._weapons = tuple(
-            self.parse_weapon(el) for el in weapons_el) if weapons_el is not None else ()
+            self._parse_weapon(el) for el in weapons_el) if weapons_el is not None else ()
         self._actions = tuple(
             _ActionSubParser(el, self._context, self.faction).to_data() for el in self.root.find(
                 "actions"))
         self._traits = tuple(
             self.parse_trait(el) for el in traits_el) if traits_el is not None else ()
+
+    def _parse_weapon(self, weapon_el: Element) -> CountedWeapon:
+        name, count, enabled = weapon_el.attrib["name"], weapon_el.attrib.get(
+            "count"), weapon_el.attrib.get("enabled")
+        name = f"Weapons/{WeaponParser.get_name(name)}"
+        valid_attrs = "name", "slotName", "count", "enabled", "requiredUpgrade"
+        if any(attr not in valid_attrs for attr in weapon_el.attrib):
+            raise ValueError(f"Unrecognized weapon attrs among: {[*weapon_el.attrib]}")
+        weapon = self._context.get(name)
+        if not weapon:
+            raise ValueError(f"Weapon not retrievable: {name!r}")
+        count = int(count) if count else 1
+        enabled = True if not enabled else False
+        required_upgrade = self.parse_required_upgrade(weapon_el)
+        return CountedWeapon.from_weapon(weapon, count, enabled, required_upgrade)
 
     def to_data(self) -> Unit:  # override
         return Unit(

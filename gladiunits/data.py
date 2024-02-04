@@ -370,94 +370,6 @@ class CategoryEffect(Effect):
         return self.applies_to_cat_and_no_trait("Units", "Traits/Fortification")
 
 
-class ModifierType(Enum):
-    REGULAR = 'modifiers'
-    ON_COMBAT_OPPONENT = 'onCombatOpponentModifiers'
-    ON_COMBAT_SELF = 'onCombatSelfModifiers'
-    ON_ENEMY_KILLED_OPPONENT_TILE = 'onEnemyKilledOpponentTileModifiers'
-    ON_ENEMY_KILLED_SELF_AREA = 'onEnemyKilledSelf'
-    ON_ENEMY_KILLED_SELF = 'onEnemyKilledSelfModifiers'
-    ON_TILE_ENTERED = 'onTileEnteredModifiers'
-    ON_TRAIT_ADDED = 'onTraitAddedModifiers'
-    ON_TRAIT_REMOVED = 'onTraitRemovedModifiers'
-    ON_TRANSPORT_DISEMBARKED = 'onTransportDisembarked'
-    ON_TRANSPORT_EMBARKED = 'onTransportEmbarked'
-    ON_UNIT_DISAPPEARED_AREA = 'onUnitDisappeared'
-    ON_UNIT_DISAPPEARED = 'onUnitDisappearedModifiers'
-    ON_UNIT_DISEMBARKED = 'onUnitDisembarked'
-    OPPONENT = 'opponentModifiers'
-    # <perTurnModifiers endure="0"/> 'endure' is not parsed as it's always there and the same
-    PER_TURN = 'perTurnModifiers'
-    UNKNOWN = "unknown"
-
-    @classmethod
-    def from_tag(cls, tag: str) -> "ModifierType":
-        try:
-            return cls(tag)
-        except ValueError:
-            return cls.UNKNOWN
-
-
-@dataclass(frozen=True)
-class Modifier:
-    type: ModifierType
-    conditions: tuple[Effect, ...]
-    effects: tuple[Effect, ...]
-
-    @property
-    def all_effects(self) -> list[Effect]:
-        return [*self.conditions, *self.effects]
-
-    @property
-    def all_params(self) -> list[Parameter]:
-        return [p for e in self.all_effects for p in e.all_params]
-
-    @property
-    def unresolved_refs(self) -> OrderedDict[str, Origin]:
-        return OrderedDict(sorted((k, v) for k, v in collect_unresolved_refs(self).items()))
-
-    @property
-    def is_resolved(self) -> bool:
-        return not self.unresolved_refs
-
-    @property
-    def is_heal(self) -> bool:
-        return any(e.is_heal for e in self.effects)
-
-
-@dataclass(frozen=True)
-class Area:
-    affects: Literal["Unit", "Player", "Tile"]
-    radius: int | None
-    exclude_radius: int | None
-
-
-@dataclass(frozen=True)
-class AreaModifier(Modifier):
-    area: Area
-
-
-@dataclass(frozen=True)
-class ModifiersMixin:
-    modifiers: tuple[Modifier | AreaModifier, ...]
-
-    @property
-    def all_effects(self) -> list[Effect]:
-        return [e for m in self.modifiers for e in m.all_effects]
-
-    @property
-    def mod_effects(self) -> list[Effect]:
-        return [e for m in self.modifiers for e in m.effects]
-
-    @property
-    def unresolved_refs(self) -> OrderedDict[str, Origin]:
-        return OrderedDict(sorted((k, v) for k, v in collect_unresolved_refs(self).items()))
-
-    @property
-    def is_resolved(self) -> bool:
-        return not self.unresolved_refs
-
-
 # TODO: add `tier` property to units based on corresponding upgrade
 @dataclass(frozen=True)
 class Upgrade(ReferenceMixin, TextsMixin, Origin):
@@ -513,8 +425,102 @@ class UpgradeWrapper:
         )
 
 
+class ModifierType(Enum):
+    REGULAR = 'modifiers'
+    ON_COMBAT_OPPONENT = 'onCombatOpponentModifiers'
+    ON_COMBAT_SELF = 'onCombatSelfModifiers'
+    ON_ENEMY_KILLED_OPPONENT_TILE = 'onEnemyKilledOpponentTileModifiers'
+    ON_ENEMY_KILLED_SELF_AREA = 'onEnemyKilledSelf'
+    ON_ENEMY_KILLED_SELF = 'onEnemyKilledSelfModifiers'
+    ON_TILE_ENTERED = 'onTileEnteredModifiers'
+    ON_TRAIT_ADDED = 'onTraitAddedModifiers'
+    ON_TRAIT_REMOVED = 'onTraitRemovedModifiers'
+    ON_TRANSPORT_DISEMBARKED = 'onTransportDisembarked'
+    ON_TRANSPORT_EMBARKED = 'onTransportEmbarked'
+    ON_UNIT_DISAPPEARED_AREA = 'onUnitDisappeared'
+    ON_UNIT_DISAPPEARED = 'onUnitDisappearedModifiers'
+    ON_UNIT_DISEMBARKED = 'onUnitDisembarked'
+    OPPONENT = 'opponentModifiers'
+    # <perTurnModifiers endure="0"/> 'endure' is not parsed as it's always there and the same
+    PER_TURN = 'perTurnModifiers'
+    UNKNOWN = "unknown"
+
+    @classmethod
+    def from_tag(cls, tag: str) -> "ModifierType":
+        try:
+            return cls(tag)
+        except ValueError:
+            return cls.UNKNOWN
+
+
 @dataclass(frozen=True)
-class Trait(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
+class Modifier:
+    type: ModifierType
+    conditions: tuple[Effect, ...]
+    effects: tuple[Effect, ...]
+    required_upgrade: Upgrade | None
+
+    @property
+    def all_effects(self) -> list[Effect]:
+        return [*self.conditions, *self.effects]
+
+    @property
+    def all_params(self) -> list[Parameter]:
+        return [p for e in self.all_effects for p in e.all_params]
+
+    @property
+    def unresolved_refs(self) -> OrderedDict[str, Origin]:
+        return OrderedDict(sorted((k, v) for k, v in collect_unresolved_refs(self).items()))
+
+    @property
+    def is_resolved(self) -> bool:
+        return not self.unresolved_refs
+
+    @property
+    def is_heal(self) -> bool:
+        return any(e.is_heal for e in self.effects)
+
+
+@dataclass(frozen=True)
+class Area:
+    affects: Literal["Unit", "Player", "Tile"]
+    radius: int | None
+    exclude_radius: int | None
+
+
+@dataclass(frozen=True)
+class AreaModifier(Modifier):
+    area: Area
+
+
+@dataclass(frozen=True)
+class ModifiersMixin:
+    modifiers: tuple[Modifier | AreaModifier, ...]
+
+    @property
+    def all_effects(self) -> list[Effect]:
+        return [e for m in self.modifiers for e in m.all_effects]
+
+    @property
+    def mod_effects(self) -> list[Effect]:
+        return [e for m in self.modifiers for e in m.effects]
+
+    @property
+    def unresolved_refs(self) -> OrderedDict[str, Origin]:
+        return OrderedDict(sorted((k, v) for k, v in collect_unresolved_refs(self).items()))
+
+    @property
+    def is_resolved(self) -> bool:
+        return not self.unresolved_refs
+
+
+# Traits are different than Actions and Modifiers (other XML tags that can sometimes possess
+# a 'requiredUpgrade' attribute) as they come in two breeds: 1) one that doesn't ever possess
+# 'requiredUpgrade' (root element of Trait .xml files) and 2) one that sometimes does (a
+# sub-element of Weapon and Unit .xml files), hence a need for two separate classes: first for 1)
+# and those 2) that have no 'requiredUpgrade' and second for the others
+@dataclass(frozen=True)
+class Trait(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):  # case 1) / case 2)
     type: Literal["Buff", "Debuff"] | None
     target_conditions: tuple[Effect, ...]
     max_rank: int | None
@@ -535,13 +541,17 @@ class Trait(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
     def all_effects(self) -> list[Effect]:  # override
         return [*self.target_conditions, *super().all_effects]
 
+    @property
+    def is_faction_specific(self) -> bool:  # makes sense only for Traits
+        return self.faction is not None
+
 
 @dataclass(frozen=True)
-class UpgradeableTrait(Trait):
+class UpgradeRequiringTrait(Trait):  # case 2)
     required_upgrade: Upgrade
 
     @classmethod
-    def from_trait(cls, trait: Trait, required_upgrade: Upgrade) -> "UpgradeableTrait":
+    def from_trait(cls, trait: Trait, required_upgrade: Upgrade) -> "UpgradeRequiringTrait":
         return cls(
             path=trait.path,
             name=trait.name,
@@ -609,7 +619,7 @@ class WeaponType(Enum):
 class Weapon(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
     type: WeaponType
     target: Target | None
-    traits: tuple[Trait | UpgradeableTrait, ...]
+    traits: tuple[Trait | UpgradeRequiringTrait, ...]
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -628,6 +638,10 @@ class Weapon(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
         return [*super().all_effects, *self.traits] + target_effects
 
 
+# Some actions can be available only after an upgrade (and then, they have 'requiredUpgrade'
+# defined as one of its attributes in XML) or can be available from the start but only augmented
+# via upgrade (and then one of its Modifiers has a 'requiredUpgrade' defined as one of its
+# attributes in XML)
 @dataclass(frozen=True)
 class Action(ModifiersMixin, ReferenceMixin):
     name: str
@@ -635,12 +649,18 @@ class Action(ModifiersMixin, ReferenceMixin):
     texts: TextsMixin | None
     conditions: tuple[Effect, ...]
     targets: tuple[Target, ...]
+    required_upgrade: Upgrade | None
+    required_weapon: Weapon | None
 
     def __hash__(self) -> int:
         return hash((self.name, self.texts))
 
     def __eq__(self, other: "Action") -> bool:
         return (self.name, self.texts) == (other.name, other.texts)
+
+    @property
+    def augmentations(self) -> tuple[Upgrade, ...]:
+        return tuple(m.required_upgrade for m in self.modifiers if m.required_upgrade)
 
     @property
     def all_effects(self) -> list[Effect]:  # override
@@ -657,16 +677,12 @@ class Action(ModifiersMixin, ReferenceMixin):
         return not self.is_simple
 
     @property
-    def required_upgrade(self) -> Origin | Upgrade | None:
-        return from_iterable(self.params, lambda p: p.type == "required_upgrade")
-
-    @property
-    def is_upgradeable(self) -> bool:
-        return self.required_upgrade is not None
-
-    @property
     def is_basic(self) -> bool:
-        return not self.is_upgradeable
+        return not self.required_upgrade
+
+    @property
+    def is_augmentable(self) -> bool:
+        return bool(self.augmentations)
 
     @property
     def is_heal(self) -> bool:
@@ -690,10 +706,6 @@ class Action(ModifiersMixin, ReferenceMixin):
             if t.is_mechanical_only_heal:
                 return True
         return False
-
-    @property
-    def is_weapon_action(self) -> bool:
-        return any(p.type == "weaponSlotName" for p in self.params)
 
 
 @dataclass(frozen=True)
@@ -734,7 +746,7 @@ class Unit(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
     group_size: int
     weapons: tuple[CountedWeapon, ...]
     actions: tuple[Action, ...]
-    traits: tuple[Trait | UpgradeableTrait, ...]
+    traits: tuple[Trait | UpgradeRequiringTrait, ...]
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -791,20 +803,32 @@ class Unit(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
         return [a for a in self.actions if a.is_elaborate]
 
     @property
-    def basic_actions(self) -> list[Action]:
+    def basic_actions(self) -> list[Action]:  # no upgrade required
         return [a for a in self.elaborate_actions if a.is_basic]
 
     @property
-    def upgradeable_actions(self) -> list[Action]:
-        return [a for a in self.elaborate_actions if a.is_upgradeable]
+    def upgrade_requiring_actions(self) -> list[Action]:
+        return [a for a in self.elaborate_actions if not a.is_basic]
+
+    @property
+    def weapon_requiring_actions(self) -> list[Action]:
+        return [a for a in self.elaborate_actions if a.required_weapon]
+
+    @property
+    def augmentable_actions(self) -> list[Action]:
+        return [a for a in self.elaborate_actions if a.is_augmentable]
 
     @property
     def basic_traits(self) -> list[Trait]:
-        return [t for t in self.traits if not isinstance(t, UpgradeableTrait)]
+        return [t for t in self.traits if not isinstance(t, UpgradeRequiringTrait)]
 
     @property
-    def upgradeable_traits(self) -> list[Origin]:
-        return [t for t in self.traits if isinstance(t, UpgradeableTrait)]
+    def upgrade_requiring_traits(self) -> list[Trait]:
+        return [t for t in self.traits if isinstance(t, UpgradeRequiringTrait)]
+
+    @property
+    def upgrade_requiring_weapons(self) -> list[CountedWeapon]:
+        return [w for w in self.weapons if w.required_upgrade]
 
     # classification traits
     @property
