@@ -10,7 +10,7 @@
 import logging
 from collections import deque
 
-from gladiunits.data import Data, UpgradeWrapper, Trait, Unit, Upgrade, Weapon
+from gladiunits.data import Data, UpgradeWrapper, Trait, Unit, Upgrade, BaseWeapon
 
 _log = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ def sift_upgrades(
 
 
 def get_context(upgrades: list[UpgradeWrapper | Upgrade] = (), traits: list[Trait] = (),
-                weapons: list[Weapon] = (),
+                weapons: list[BaseWeapon] = (),
                 units: list[Unit] = ()) -> tuple[dict[str, Data], list[Data]]:
     upgrades = upgrades or []
     upgrades, upgrade_wrappers = sift_upgrades(*upgrades)
@@ -85,7 +85,7 @@ class Dereferencer:
 
 def dereference(resolved: dict[str, Data],
                 unresolved: list[Data], *ignored_categories: str
-                ) -> tuple[list[Upgrade], list[Trait], list[Weapon], list[Unit]]:
+                ) -> tuple[list[Upgrade], list[Trait], list[BaseWeapon], list[Unit]]:
     _log.info(f"Dereferencing {len(unresolved)} objects...")
     stack = unresolved[::-1]
     stack = deque(stack)
@@ -116,7 +116,7 @@ def dereference(resolved: dict[str, Data],
             upgrades.append(v)
         elif isinstance(v, Trait):
             traits.append(v)
-        elif isinstance(v, Weapon):
+        elif isinstance(v, BaseWeapon):
             weapons.append(v)
         else:
             units.append(v)

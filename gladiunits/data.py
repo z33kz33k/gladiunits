@@ -31,7 +31,7 @@ CATEGORIES = [
 ]
 PARSED_CATEGORIES = [
     # 'Actions',
-    # 'Buildings',
+    'Buildings',
     # 'Cities',
     # 'Factions',
     # 'Features',
@@ -140,7 +140,7 @@ class TextsMixin:
     flavor: str | None
 
 
-Data: TypeAlias = Union["UpgradeWrapper", "Upgrade", "Trait", "Weapon", "Unit"]
+Data: TypeAlias = Union["UpgradeWrapper", "Upgrade", "Trait", "BaseWeapon", "Unit"]
 ParamValue: TypeAlias = (Data | tuple[Data, ...] | Origin | tuple[Origin, ...] | float | int |
                          str | bool)
 
@@ -454,11 +454,19 @@ class ModifierType(Enum):
 
 
 @dataclass(frozen=True)
-class Modifier:
+class RequiredUpgradeMixin:
+    required_upgrade: Upgrade | None
+
+    @property
+    def is_basic(self) -> bool:
+        return not self.required_upgrade
+
+
+@dataclass(frozen=True)
+class Modifier(RequiredUpgradeMixin):
     type: ModifierType
     conditions: tuple[Effect, ...]
     effects: tuple[Effect, ...]
-    required_upgrade: Upgrade | None
 
     @property
     def all_effects(self) -> list[Effect]:
@@ -513,14 +521,23 @@ class ModifiersMixin:
     def is_resolved(self) -> bool:
         return not self.unresolved_refs
 
+    @property
+    def augmentations(self) -> tuple[Upgrade, ...]:
+        return tuple(m.required_upgrade for m in self.modifiers if m.required_upgrade)
+
+    @property
+    def is_augmentable(self) -> bool:
+        return bool(self.augmentations)
+
 
 # Traits are different than Actions and Modifiers (other XML tags that can sometimes possess
 # a 'requiredUpgrade' attribute) as they come in two breeds: 1) one that doesn't ever possess
 # 'requiredUpgrade' (root element of Trait .xml files) and 2) one that sometimes does (a
-# sub-element of Weapon and Unit .xml files), hence a need for two separate classes: first for 1)
-# and those 2) that have no 'requiredUpgrade' and second for the others
+# sub-element of Weapon and Unit .xml files), but nevertheless they are treated similarly and
+# parsed as one object with an attribute equal to None in cases where there was no
+# `requiredUpgrade` in a source file
 @dataclass(frozen=True)
-class Trait(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):  # case 1) / case 2)
+class Trait(RequiredUpgradeMixin, ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
     type: Literal["Buff", "Debuff"] | None
     target_conditions: tuple[Effect, ...]
     max_rank: int | None
@@ -545,13 +562,8 @@ class Trait(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):  # case 1) / ca
     def is_faction_specific(self) -> bool:  # makes sense only for Traits
         return self.faction is not None
 
-
-@dataclass(frozen=True)
-class UpgradeRequiringTrait(Trait):  # case 2)
-    required_upgrade: Upgrade
-
     @classmethod
-    def from_trait(cls, trait: Trait, required_upgrade: Upgrade) -> "UpgradeRequiringTrait":
+    def with_upgrade(cls, trait: "Trait", required_upgrade: Upgrade) -> "Trait":
         return cls(
             path=trait.path,
             name=trait.name,
@@ -616,10 +628,10 @@ class WeaponType(Enum):
 
 
 @dataclass(frozen=True)
-class Weapon(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
+class BaseWeapon(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
     type: WeaponType
     target: Target | None
-    traits: tuple[Trait | UpgradeRequiringTrait, ...]
+    traits: tuple[Trait, ...]
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -643,24 +655,19 @@ class Weapon(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
 # via upgrade (and then one of its Modifiers has a 'requiredUpgrade' defined as one of its
 # attributes in XML)
 @dataclass(frozen=True)
-class Action(ModifiersMixin, ReferenceMixin):
+class Action(RequiredUpgradeMixin, ModifiersMixin, ReferenceMixin):
     name: str
     params: tuple[Parameter, ...]
     texts: TextsMixin | None
     conditions: tuple[Effect, ...]
     targets: tuple[Target, ...]
-    required_upgrade: Upgrade | None
-    required_weapon: Weapon | None
+    required_weapon: BaseWeapon | None
 
     def __hash__(self) -> int:
         return hash((self.name, self.texts))
 
     def __eq__(self, other: "Action") -> bool:
         return (self.name, self.texts) == (other.name, other.texts)
-
-    @property
-    def augmentations(self) -> tuple[Upgrade, ...]:
-        return tuple(m.required_upgrade for m in self.modifiers if m.required_upgrade)
 
     @property
     def all_effects(self) -> list[Effect]:  # override
@@ -675,14 +682,6 @@ class Action(ModifiersMixin, ReferenceMixin):
     @property
     def is_elaborate(self) -> bool:
         return not self.is_simple
-
-    @property
-    def is_basic(self) -> bool:
-        return not self.required_upgrade
-
-    @property
-    def is_augmentable(self) -> bool:
-        return bool(self.augmentations)
 
     @property
     def is_heal(self) -> bool:
@@ -709,44 +708,65 @@ class Action(ModifiersMixin, ReferenceMixin):
 
 
 @dataclass(frozen=True)
-class CountedWeapon(Weapon):
+class Weapon(RequiredUpgradeMixin, BaseWeapon):
     count: int
     enabled: bool
-    required_upgrade: Upgrade | None = field(default=None)
 
     @classmethod
-    def from_weapon(cls, weapon: Weapon, count: int, enabled: bool,
-                    required_upgrade: Upgrade | None = None) -> "CountedWeapon":
+    def from_base_weapon(cls, weapon: BaseWeapon, count: int, enabled: bool,
+                         required_upgrade: Upgrade | None = None) -> "Weapon":
         return cls(
-            weapon.path,
-            weapon.name,
-            weapon.description,
-            weapon.flavor,
-            weapon.reference,
-            weapon.modifiers,
-            weapon.type,
-            weapon.target,
-            weapon.traits,
+            path=weapon.path,
+            name=weapon.name,
+            description=weapon.description,
+            flavor=weapon.flavor,
+            reference=weapon.reference,
+            modifiers=weapon.modifiers,
+            type=weapon.type,
+            target=weapon.target,
+            traits=weapon.traits,
             count=count,
             enabled=enabled,
             required_upgrade=required_upgrade
         )
 
-    @property
-    def is_upgradeable(self) -> bool:
-        return self.required_upgrade is not None
 
-    @property
-    def is_basic(self) -> bool:
-        return not self.is_upgradeable
+def get_mod_effects(objects: list[Data | Action], most_numerous_first=False
+                    ) -> OrderedDict[str, list[Data | Action]]:
+    effects_map = defaultdict(list)
+    for obj in objects:
+        for e in {e.name for m in obj.modifiers for e in m.effects}:
+            effects_map[e].append(obj)
+    if most_numerous_first:
+        new_map = [(k, v) for k, v in effects_map.items()]
+        new_map.sort(key=lambda pair: len(pair[1]), reverse=True)
+        return OrderedDict(new_map)
+    return OrderedDict(sorted((k, v) for k, v in effects_map.items()))
+
+
+def get_obj(objects: list[Data | Action], name: str) -> Data | Action | None:
+    return from_iterable(objects, lambda o: o.name == name)
+
+
+def get_objects(objects: list[Data | Action], *names: str) -> list[Data | Action | None]:
+    d = {n: i for i, n in enumerate(names)}
+    retrieved = []
+    for obj in objects:
+        if obj.name in names:
+            retrieved.append((obj, d[obj.name]))
+    for name in names:  # match number of outputs with number of inputs
+        if name not in {r.name for r, _ in retrieved}:
+            retrieved.append((None, d[name]))
+    retrieved.sort(key=lambda r: r[1])  # preserve the input ordering
+    return [r[0] for r in retrieved]
 
 
 @dataclass(frozen=True)
 class Unit(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
     group_size: int
-    weapons: tuple[CountedWeapon, ...]
+    weapons: tuple[Weapon, ...]
     actions: tuple[Action, ...]
-    traits: tuple[Trait | UpgradeRequiringTrait, ...]
+    traits: tuple[Trait, ...]
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -820,15 +840,19 @@ class Unit(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
 
     @property
     def basic_traits(self) -> list[Trait]:
-        return [t for t in self.traits if not isinstance(t, UpgradeRequiringTrait)]
+        return [t for t in self.traits if t.is_basic]
 
     @property
     def upgrade_requiring_traits(self) -> list[Trait]:
-        return [t for t in self.traits if isinstance(t, UpgradeRequiringTrait)]
+        return [t for t in self.traits if not t.is_basic]
 
     @property
-    def upgrade_requiring_weapons(self) -> list[CountedWeapon]:
-        return [w for w in self.weapons if w.required_upgrade]
+    def basic_weapons(self) -> list[Weapon]:
+        return [w for w in self.weapons if w.is_basic]
+
+    @property
+    def upgrade_requiring_weapons(self) -> list[Weapon]:
+        return [w for w in self.weapons if not w.is_basic]
 
     # classification traits
     @property
@@ -950,31 +974,10 @@ class Unit(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
             a.name == "turboBoost" for a in self.elaborate_actions)
 
 
-def get_mod_effects(objects: list[Data | Action], most_numerous_first=False
-                    ) -> OrderedDict[str, list[Data | Action]]:
-    effects_map = defaultdict(list)
-    for obj in objects:
-        for e in {e.name for m in obj.modifiers for e in m.effects}:
-            effects_map[e].append(obj)
-    if most_numerous_first:
-        new_map = [(k, v) for k, v in effects_map.items()]
-        new_map.sort(key=lambda pair: len(pair[1]), reverse=True)
-        return OrderedDict(new_map)
-    return OrderedDict(sorted((k, v) for k, v in effects_map.items()))
-
-
-def get_obj(objects: list[Data | Action], name: str) -> Data | Action | None:
-    return from_iterable(objects, lambda o: o.name == name)
-
-
-def get_objects(objects: list[Data | Action], *names: str) -> list[Data | Action | None]:
-    d = {n: i for i, n in enumerate(names)}
-    retrieved = []
-    for obj in objects:
-        if obj.name in names:
-            retrieved.append((obj, d[obj.name]))
-    for name in names:  # match number of outputs with number of inputs
-        if name not in {r.name for r, _ in retrieved}:
-            retrieved.append((None, d[name]))
-    retrieved.sort(key=lambda r: r[1])  # preserve the input ordering
-    return [r[0] for r in retrieved]
+# @dataclass(frozen=True)
+# class BaseUnit(ModifiersMixin, TextsMixin, Origin):
+#     group_size: int
+#     weapons: tuple[Weapon, ...]
+#     actions: tuple[Action, ...]
+#     traits: tuple[Trait | UpgradeRequiringTrait, ...]
+#
