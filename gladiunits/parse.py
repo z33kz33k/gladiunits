@@ -33,10 +33,10 @@ import lxml
 from lxml.etree import XMLSyntaxError, _Element as Element
 
 from gladiunits.constants import PathLike, T, XML_DIR
-from gladiunits.data import (Action, Area, AreaModifier, Unit, BaseWeapon, CATEGORIES,
-                             CategoryEffect, Data, Effect, FACTIONS, Modifier, ModifierType, Origin,
-                             Parameter, Target, TextsMixin, Trait, Upgrade, UpgradeWrapper, Weapon,
-                             WeaponType)
+from gladiunits.data import (Action, Area, AreaModifier, Building, CATEGORIES, CategoryEffect, Data,
+                             Effect,
+                             FACTIONS, Modifier, ModifierType, Origin, Parameter, Target,
+                             TextsMixin, Trait, Unit, Upgrade, UpgradeWrapper, Weapon, WeaponType)
 from gladiunits.dereference import dereference, get_context
 from gladiunits.utils import from_iterable
 
@@ -732,8 +732,8 @@ class WeaponParser(XmlParser):
     def get_name(cls, weapon_name: str) -> str:
         return cls.ALIASES.get(weapon_name, weapon_name)
 
-    def to_data(self) -> BaseWeapon:  # override
-        return BaseWeapon(
+    def to_data(self) -> Weapon:  # override
+        return Weapon(
             path=self.origin.path,
             name=self.texts.name,
             description=self.texts.description,
@@ -742,19 +742,22 @@ class WeaponParser(XmlParser):
             modifiers=self._modifiers,
             type=self._type,
             target=self._target,
-            traits=self._traits
+            traits=self._traits,
+            required_upgrade=None,
+            count=None,
+            enabled=None,
         )
 
 
-def parse_weapons(upgrades: Iterable[Upgrade], traits: Iterable[Trait],
-                  sort=False) -> list[BaseWeapon]:
+def parse_weapons(
+        upgrades: Iterable[Upgrade], traits: Iterable[Trait], sort=False) -> list[Weapon]:
     _log.info("Parsing weapons...")
     context = {str(obj.category_path): obj for obj in [*upgrades, *traits]}
     rootdir = Path(r"xml/World/Weapons")
     weapons = [WeaponParser(f, context).to_data() for f in rootdir.iterdir()]
     _log.info(f"Parsed {len(weapons)} weapons")
     resolved, unresolved = get_context(upgrades=[*upgrades], traits=[*traits], weapons=weapons)
-    *_, weapons, _ = dereference(resolved, unresolved, "Units", "Buildings")
+    _, _, weapons, *_ = dereference(resolved, unresolved, "Units", "Buildings")
     if sort:
         return sorted(weapons, key=str)
     return weapons
@@ -808,7 +811,7 @@ class _ActionSubParser(XmlParser):
             return ()
         return tuple(self.parse_target(el) for el in root)
 
-    def _parse_required_weapon(self) -> BaseWeapon | None:
+    def _parse_required_weapon(self) -> Weapon | None:
         name = self.root.attrib.get("weaponSlotName")
         if not name:
             return None
@@ -866,25 +869,26 @@ class UnitParser(XmlParser):
         count = int(count) if count else 1
         enabled = True if not enabled else False
         required_upgrade = self.parse_required_upgrade(weapon_el)
-        return Weapon.from_base_weapon(weapon, count, enabled, required_upgrade)
+        return Weapon.with_additional_data(weapon, count, enabled, required_upgrade)
 
     def to_data(self) -> Unit:  # override
         return Unit(
-            self.origin.path,
-            self.texts.name,
-            self.texts.description,
-            self.texts.flavor,
-            self._reference,
-            self._modifiers,
-            self._group_size,
-            self._weapons,
-            self._actions,
-            self._traits
+            path=self.origin.path,
+            name=self.texts.name,
+            description=self.texts.description,
+            flavor=self.texts.flavor,
+            reference=self._reference,
+            modifiers=self._modifiers,
+            group_size=self._group_size,
+            weapons=self._weapons,
+            actions=self._actions,
+            traits=self._traits
         )
 
 
-def parse_units(upgrades: Iterable[Upgrade], traits: Iterable[Trait],
-                weapons: Iterable[BaseWeapon], sort=False) -> list[Unit]:
+def parse_units(
+        upgrades: Iterable[Upgrade], traits: Iterable[Trait], weapons: Iterable[Weapon],
+        sort=False) -> list[Unit]:
     _log.info("Parsing units...")
     context = {str(obj.category_path): obj for obj in [*upgrades, *traits, *weapons]}
     rootdir = Path(r"xml/World/Units")
@@ -893,51 +897,69 @@ def parse_units(upgrades: Iterable[Upgrade], traits: Iterable[Trait],
     _log.info(f"Parsed {len(units)} units")
     resolved, unresolved = get_context(
         upgrades=[*upgrades], traits=[*traits], weapons=[*weapons], units=units)
-    *_, units = dereference(resolved, unresolved, "Buildings")
+    *_, units, _ = dereference(resolved, unresolved, "Buildings")
     if sort:
         return sorted(units, key=str)
     return units
 
 
-# class BuildingParser(XmlParser):
-#     ROOT_TAG = "building"
-#
-#     def __init__(self, file: PathLike, context: dict[str, Data]) -> None:
-#         super().__init__(file, context)
-#         if (self.xml.file.parent.parent.name != "Building"
-#                 and self.xml.file.parent.parent.parent.name != "Building"):
-#             raise ValueError(f"Invalid input file: {self.xml.file}")
-#         self._modifiers = self.parse_modifiers(self.root)
-#         self._actions = tuple(
-#             _ActionSubParser(el, self._context, self.faction).to_data() for el in self.root.find(
-#                 "actions"))
-#         traits_el = self.root.find("traits")
-#         self._traits = tuple(
-#             self.parse_trait(el) for el in traits_el) if traits_el is not None else ()
-#
-#     def to_data(self) -> BaseUnit:  # override
-#         return BaseUnit(
-#             self.origin.path,
-#             self.texts.name,
-#             self.texts.description,
-#             self.texts.flavor,
-#             self._reference,
-#             self._modifiers,
-#             self._group_size,
-#             self._weapons,
-#             self._actions,
-#             self._traits
-#         )
-#
+class BuildingParser(XmlParser):
+    ROOT_TAG = "building"
 
-def parse_all(sort=False) -> tuple[list[Upgrade], list[Trait], list[BaseWeapon], list[Unit]]:
+    def __init__(self, file: PathLike, context: dict[str, Data]) -> None:
+        super().__init__(file, context)
+        if (self.xml.file.parent.parent.name != "Buildings"
+                and self.xml.file.parent.parent.parent.name != "Buildings"):
+            raise ValueError(f"Invalid input file: {self.xml.file}")
+        self._modifiers = self.parse_modifiers(self.root)
+        actions_el = self.root.find("actions")
+        self._actions = tuple(
+            _ActionSubParser(el, self._context, self.faction).to_data()
+            for el in actions_el) if actions_el is not None else ()
+        traits_el = self.root.find("traits")
+        self._traits = tuple(
+            self.parse_trait(el) for el in traits_el) if traits_el is not None else ()
+
+    def to_data(self) -> Building:  # override
+        return Building(
+            path=self.origin.path,
+            name=self.texts.name,
+            description=self.texts.description,
+            flavor=self.texts.flavor,
+            modifiers=self._modifiers,
+            actions=self._actions,
+            traits=self._traits
+        )
+
+
+def parse_buildings(
+        upgrades: Iterable[Upgrade], traits: Iterable[Trait], weapons: Iterable[Weapon],
+        units: Iterable[Unit], sort=False) -> list[Building]:
+    _log.info("Parsing buildings...")
+    context = {str(obj.category_path): obj for obj in [*upgrades, *traits, *weapons, *units]}
+    rootdir = Path(r"xml/World/Buildings")
+    buildings = [BuildingParser(Path(dir_) / f, context).to_data() for dir_, _, files
+                 in os.walk(rootdir) for f in files]
+    _log.info(f"Parsed {len(buildings)} buildings")
+    resolved, unresolved = get_context(
+        upgrades=[*upgrades], traits=[*traits], weapons=[*weapons], units=[*units],
+        buildings=buildings)
+    *_, buildings = dereference(resolved, unresolved)
+    if sort:
+        return sorted(buildings, key=str)
+    return buildings
+
+
+def parse_all(
+        sort=False) -> tuple[list[Upgrade], list[Trait], list[Weapon], list[Unit], list[Building]]:
     upgrades = parse_upgrades(sort=sort)
     traits = parse_traits(upgrades, sort=sort)
     weapons = parse_weapons(upgrades, traits, sort=sort)
     units = parse_units(upgrades, traits, weapons, sort=sort)
-    total = sum(1 for _ in [*upgrades, *traits, *weapons, *units])
+    buildings = parse_buildings(upgrades, traits, weapons, units, sort=sort)
+    total = sum(1 for _ in [*upgrades, *traits, *weapons, *units, *buildings])
     _log.info(f"All parsing complete. Total {total} objects parsed")
-    return upgrades, traits, weapons, units
+    return upgrades, traits, weapons, units, buildings
 
 
 def from_origin(origin: Origin, context: dict[str, Data] | None = None) -> Data:

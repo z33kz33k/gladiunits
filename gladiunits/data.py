@@ -77,6 +77,18 @@ _CIRCULAR_REFS = {
     "Traits/ChaosSpaceMarines/GiftOfMutation",
     "Traits/ChaosSpaceMarines/Bloated",
     "Traits/Tau/TargetAcquired",
+    'Buildings/AdeptusMechanicus/Construction',
+    'Buildings/AstraMilitarum/Construction',
+    'Buildings/ChaosSpaceMarines/Construction',
+    'Buildings/Drukhari/Construction',
+    'Buildings/Eldar/Construction',
+    'Buildings/Necrons/Construction',
+    'Buildings/Neutral/Construction',
+    'Buildings/Orks/Construction',
+    'Buildings/SistersOfBattle/Construction',
+    'Buildings/SpaceMarines/Construction',
+    'Buildings/Tau/Construction',
+    'Buildings/Tyranids/Construction',
 }
 
 
@@ -140,7 +152,7 @@ class TextsMixin:
     flavor: str | None
 
 
-Data: TypeAlias = Union["UpgradeWrapper", "Upgrade", "Trait", "BaseWeapon", "Unit"]
+Data: TypeAlias = Union["UpgradeWrapper", "Upgrade", "Trait", "Weapon", "Unit"]
 ParamValue: TypeAlias = (Data | tuple[Data, ...] | Origin | tuple[Origin, ...] | float | int |
                          str | bool)
 
@@ -207,6 +219,7 @@ class Parameter:
         'addMin': float,
         'base': float,
         'beginOnDisappear': bool,
+        'building': Origin,
         'charges': int,
         'consumedAction': bool,
         'consumedActionPoints': bool,
@@ -226,6 +239,7 @@ class Parameter:
         'elite': bool,
         'enabled': bool,
         'equal': float,
+        'feature': Origin,
         'greater': float,
         'interfaceSound': str,
         'less': float,
@@ -608,6 +622,23 @@ class Target(ModifiersMixin):
             for c in self.conditions if isinstance(c, CategoryEffect))
 
 
+@dataclass(frozen=True)
+class TraitsMixin:
+    traits: tuple[Trait, ...]
+
+    @property
+    def basic_traits(self) -> list[Trait]:
+        return [t for t in self.traits if t.is_basic]
+
+    @property
+    def upgrade_requiring_traits(self) -> list[Trait]:
+        return [t for t in self.traits if not t.is_basic]
+
+    @property
+    def augmentable_traits(self) -> list[Trait]:
+        return [t for t in self.traits if t.is_augmentable]
+
+
 class WeaponType(Enum):
     BEAM = 'beamWeapon'
     EXPLOSIVE = 'explosiveWeapon'
@@ -628,10 +659,30 @@ class WeaponType(Enum):
 
 
 @dataclass(frozen=True)
-class BaseWeapon(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
+class Weapon(TraitsMixin, RequiredUpgradeMixin, ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
     type: WeaponType
     target: Target | None
-    traits: tuple[Trait, ...]
+    count: int | None  # not defined in Weapons .xml
+    enabled: bool | None  # not defined in Weapons .xml
+
+    @classmethod
+    def with_additional_data(
+            cls, weapon: "Weapon", count: int, enabled: bool,
+            required_upgrade: Upgrade | None = None) -> "Weapon":
+        return cls(
+            path=weapon.path,
+            name=weapon.name,
+            description=weapon.description,
+            flavor=weapon.flavor,
+            reference=weapon.reference,
+            modifiers=weapon.modifiers,
+            type=weapon.type,
+            target=weapon.target,
+            traits=weapon.traits,
+            count=count,
+            enabled=enabled,
+            required_upgrade=required_upgrade
+        )
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -661,7 +712,7 @@ class Action(RequiredUpgradeMixin, ModifiersMixin, ReferenceMixin):
     texts: TextsMixin | None
     conditions: tuple[Effect, ...]
     targets: tuple[Target, ...]
-    required_weapon: BaseWeapon | None
+    required_weapon: Weapon | None
 
     def __hash__(self) -> int:
         return hash((self.name, self.texts))
@@ -707,30 +758,6 @@ class Action(RequiredUpgradeMixin, ModifiersMixin, ReferenceMixin):
         return False
 
 
-@dataclass(frozen=True)
-class Weapon(RequiredUpgradeMixin, BaseWeapon):
-    count: int
-    enabled: bool
-
-    @classmethod
-    def from_base_weapon(cls, weapon: BaseWeapon, count: int, enabled: bool,
-                         required_upgrade: Upgrade | None = None) -> "Weapon":
-        return cls(
-            path=weapon.path,
-            name=weapon.name,
-            description=weapon.description,
-            flavor=weapon.flavor,
-            reference=weapon.reference,
-            modifiers=weapon.modifiers,
-            type=weapon.type,
-            target=weapon.target,
-            traits=weapon.traits,
-            count=count,
-            enabled=enabled,
-            required_upgrade=required_upgrade
-        )
-
-
 def get_mod_effects(objects: list[Data | Action], most_numerous_first=False
                     ) -> OrderedDict[str, list[Data | Action]]:
     effects_map = defaultdict(list)
@@ -762,11 +789,38 @@ def get_objects(objects: list[Data | Action], *names: str) -> list[Data | Action
 
 
 @dataclass(frozen=True)
-class Unit(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
+class ActionsMixin:
+    actions: tuple[Action, ...]
+
+    @property
+    def simple_actions(self) -> list[Action]:
+        return [a for a in self.actions if a.is_simple]
+
+    @property
+    def elaborate_actions(self) -> list[Action]:
+        return [a for a in self.actions if a.is_elaborate]
+
+    @property
+    def basic_actions(self) -> list[Action]:  # no upgrade required
+        return [a for a in self.elaborate_actions if a.is_basic]
+
+    @property
+    def upgrade_requiring_actions(self) -> list[Action]:
+        return [a for a in self.elaborate_actions if not a.is_basic]
+
+    @property
+    def weapon_requiring_actions(self) -> list[Action]:
+        return [a for a in self.elaborate_actions if a.required_weapon]
+
+    @property
+    def augmentable_actions(self) -> list[Action]:
+        return [a for a in self.elaborate_actions if a.is_augmentable]
+
+
+@dataclass(frozen=True)
+class Unit(ActionsMixin, TraitsMixin, ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
     group_size: int
     weapons: tuple[Weapon, ...]
-    actions: tuple[Action, ...]
-    traits: tuple[Trait, ...]
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -813,39 +867,7 @@ class Unit(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
     def morale(self) -> int:
         return self._get_key_property("moraleMax", int)
 
-    # actions
-    @property
-    def simple_actions(self) -> list[Action]:
-        return [a for a in self.actions if a.is_simple]
-
-    @property
-    def elaborate_actions(self) -> list[Action]:
-        return [a for a in self.actions if a.is_elaborate]
-
-    @property
-    def basic_actions(self) -> list[Action]:  # no upgrade required
-        return [a for a in self.elaborate_actions if a.is_basic]
-
-    @property
-    def upgrade_requiring_actions(self) -> list[Action]:
-        return [a for a in self.elaborate_actions if not a.is_basic]
-
-    @property
-    def weapon_requiring_actions(self) -> list[Action]:
-        return [a for a in self.elaborate_actions if a.required_weapon]
-
-    @property
-    def augmentable_actions(self) -> list[Action]:
-        return [a for a in self.elaborate_actions if a.is_augmentable]
-
-    @property
-    def basic_traits(self) -> list[Trait]:
-        return [t for t in self.traits if t.is_basic]
-
-    @property
-    def upgrade_requiring_traits(self) -> list[Trait]:
-        return [t for t in self.traits if not t.is_basic]
-
+    # weapons
     @property
     def basic_weapons(self) -> list[Weapon]:
         return [w for w in self.weapons if w.is_basic]
@@ -853,6 +875,10 @@ class Unit(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
     @property
     def upgrade_requiring_weapons(self) -> list[Weapon]:
         return [w for w in self.weapons if not w.is_basic]
+
+    @property
+    def augmentable_weapons(self) -> list[Weapon]:
+        return [w for w in self.weapons if w.is_augmentable]
 
     # classification traits
     @property
@@ -974,10 +1000,11 @@ class Unit(ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
             a.name == "turboBoost" for a in self.elaborate_actions)
 
 
-# @dataclass(frozen=True)
-# class BaseUnit(ModifiersMixin, TextsMixin, Origin):
-#     group_size: int
-#     weapons: tuple[Weapon, ...]
-#     actions: tuple[Action, ...]
-#     traits: tuple[Trait | UpgradeRequiringTrait, ...]
-#
+@dataclass(frozen=True)
+class Building(TraitsMixin, ActionsMixin, ModifiersMixin, TextsMixin, Origin):
+    @property
+    def produced_units(self) -> list[Unit]:
+        produce_actions = [a for a in self.actions if a.name == "produceUnit"]
+        if not produce_actions:
+            return []
+        return [p.value for a in produce_actions for p in a.params if p.type == "unit"]

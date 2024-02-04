@@ -10,7 +10,7 @@
 import logging
 from collections import deque
 
-from gladiunits.data import Data, UpgradeWrapper, Trait, Unit, Upgrade, BaseWeapon
+from gladiunits.data import Building, Data, Trait, Unit, Upgrade, UpgradeWrapper, Weapon
 
 _log = logging.getLogger(__name__)
 
@@ -26,13 +26,16 @@ def sift_upgrades(
     return true_upgrades, wrappers
 
 
-def get_context(upgrades: list[UpgradeWrapper | Upgrade] = (), traits: list[Trait] = (),
-                weapons: list[BaseWeapon] = (),
-                units: list[Unit] = ()) -> tuple[dict[str, Data], list[Data]]:
+def get_context(
+        upgrades: list[UpgradeWrapper | Upgrade] = (),
+        traits: list[Trait] = (),
+        weapons: list[Weapon] = (),
+        units: list[Unit] = (),
+        buildings: list[Building] = ()) -> tuple[dict[str, Data], list[Data]]:
     upgrades = upgrades or []
     upgrades, upgrade_wrappers = sift_upgrades(*upgrades)
     upgrade_wrappers.sort(key=lambda u: u.upgrade.tier)
-    parsed = [*upgrades, *upgrade_wrappers, *traits, *weapons, *units]
+    parsed = [*upgrades, *upgrade_wrappers, *traits, *weapons, *units, *buildings]
     resolved, unresolved = {}, []
     for parsed_item in parsed:
         if parsed_item.is_resolved:
@@ -85,7 +88,7 @@ class Dereferencer:
 
 def dereference(resolved: dict[str, Data],
                 unresolved: list[Data], *ignored_categories: str
-                ) -> tuple[list[Upgrade], list[Trait], list[BaseWeapon], list[Unit]]:
+                ) -> tuple[list[Upgrade], list[Trait], list[Weapon], list[Unit], list[Building]]:
     _log.info(f"Dereferencing {len(unresolved)} objects...")
     stack = unresolved[::-1]
     stack = deque(stack)
@@ -110,19 +113,21 @@ def dereference(resolved: dict[str, Data],
                     continue
             stack.appendleft(obj)
 
-    upgrades, traits, weapons, units = [], [], [], []
+    upgrades, traits, weapons, units, buildings = [], [], [], [], []
     for v in resolved.values():
         if isinstance(v, Upgrade):
             upgrades.append(v)
         elif isinstance(v, Trait):
             traits.append(v)
-        elif isinstance(v, BaseWeapon):
+        elif isinstance(v, Weapon):
             weapons.append(v)
-        else:
+        elif isinstance(v, Unit):
             units.append(v)
+        else:
+            buildings.append(v)
 
-    for lst in upgrades, traits, weapons, units:
+    for lst in upgrades, traits, weapons, units, buildings:
         lst.sort(key=str)
 
     _log.info(f"Dereferencing complete")
-    return upgrades, traits, weapons, units
+    return upgrades, traits, weapons, units, buildings
