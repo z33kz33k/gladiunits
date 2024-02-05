@@ -384,7 +384,6 @@ class CategoryEffect(Effect):
         return self.applies_to_cat_and_no_trait("Units", "Traits/Fortification")
 
 
-# TODO: add `tier` property to units based on corresponding upgrade
 @dataclass(frozen=True)
 class Upgrade(ReferenceMixin, TextsMixin, Origin):
     tier: int
@@ -668,8 +667,8 @@ class WeaponType(Enum):
 class Weapon(TraitsMixin, RequiredUpgradeMixin, ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
     type: WeaponType
     target: Target | None
-    count: int | None  # not defined in Weapons .xml
-    enabled: bool | None  # not defined in Weapons .xml
+    count: int | None  # defined in Units XMLs
+    enabled: bool | None  # defined in Units XMLs
 
     @classmethod
     def with_additional_data(
@@ -763,6 +762,21 @@ class Action(RequiredUpgradeMixin, ModifiersMixin, ReferenceMixin):
                 return True
         return False
 
+    @property
+    def produced_unit(self) -> Union["Unit", Origin, None]:
+        if self.name == "produceUnit":
+            for p in self.params:
+                if p.type == "unit":
+                    return p.value
+        if self.name.startswith("deploy"):
+            for p in self.params:
+                if p.type == "unitType":
+                    return p.value
+        if self.reference and self.reference.category == "Units" and "Artefacts" not in str(
+                self.reference.category_path):
+            return self.reference
+        return None
+
 
 def get_mod_effects(objects: list[Data | Action], most_numerous_first=False
                     ) -> OrderedDict[str, list[Data | Action]]:
@@ -828,7 +842,8 @@ class Unit(RequiredUpgradeMixin, ActionsMixin, TraitsMixin, ModifiersMixin, Refe
            TextsMixin, Origin):
     group_size: int
     weapons: tuple[Weapon, ...]
-    building: Optional["Building"]
+    dlc: str | None
+    producer: Union["Unit", "Building", None]
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -842,8 +857,8 @@ class Unit(RequiredUpgradeMixin, ActionsMixin, TraitsMixin, ModifiersMixin, Refe
         return str(self.path) == str(other.path)
 
     @classmethod
-    def with_building(
-            cls, unit: "Unit", building: "Building") -> "Unit":
+    def with_producer(
+            cls, unit: "Unit", producer: Union["Unit", "Building"]) -> "Unit":
         return cls(
             path=unit.path,
             name=unit.name,
@@ -856,20 +871,22 @@ class Unit(RequiredUpgradeMixin, ActionsMixin, TraitsMixin, ModifiersMixin, Refe
             actions=unit.actions,
             traits=unit.traits,
             required_upgrade=unit.required_upgrade,
-            building=building
+            dlc=unit.dlc,
+            producer=producer
         )
 
-    # TODO: edge-cases like Tau drones, some Necron and Tyranid units
     @property
     def tier(self) -> int | None:  # override
         tier = super().tier
-        if super().tier is None and self.building and self.building.required_upgrade:
-            tier = self.building.required_upgrade.tier
+        if tier is None:
+            if isinstance(self.producer, Building) and self.producer.required_upgrade:
+                tier = self.producer.required_upgrade.tier
+            elif isinstance(self.producer, Unit):
+                tier = self.producer.tier
         if (tier is None
                 and not self.is_artefact
                 and not self.is_fortification
-                and self.faction != "Neutral"
-                and self.is_infantry):
+                and self.faction != "Neutral"):
             return 0
         return tier
 
@@ -920,25 +937,18 @@ class Unit(RequiredUpgradeMixin, ActionsMixin, TraitsMixin, ModifiersMixin, Refe
     def augmentable_weapons(self) -> list[Weapon]:
         return [w for w in self.weapons if w.is_augmentable]
 
-    # classification traits
+    # trait-based classifiers
     @property
     def is_artefact(self) -> bool:
         return any(t.matches("Traits/Artefact") for t in self.basic_traits)
-
-    def is_vehicle(self) -> bool:
-        return any(t.matches("Traits/Vehicle") for t in self.basic_traits)
-
-    @property
-    def is_tank(self) -> bool:  # subset of vehicles
-        return any(t.matches("Traits/Tank") for t in self.basic_traits)
 
     @property
     def is_fortification(self) -> bool:  # most are transports too (hold cargo)
         return any(t.matches("Traits/Fortification") for t in self.basic_traits)
 
     @property
-    def is_transport(self) -> bool:  # most are vehicles (apart from 2 monstrous creatures)
-        return any(t.matches("Traits/Transport") for t in self.basic_traits)
+    def is_vehicle(self) -> bool:
+        return any(t.matches("Traits/Vehicle") for t in self.basic_traits)
 
     @property
     def is_hero(self) -> bool:
@@ -947,6 +957,18 @@ class Unit(RequiredUpgradeMixin, ActionsMixin, TraitsMixin, ModifiersMixin, Refe
     @property
     def is_monstrous_creature(self) -> bool:
         return any(t.matches("Traits/MonstrousCreature") for t in self.basic_traits)
+
+    @property
+    def is_infantry(self) -> bool:  # based on Painboy healing
+        return not self.is_fortification and not self.is_vehicle and not self.is_monstrous_creature
+
+    @property
+    def is_tank(self) -> bool:  # subset of vehicles
+        return any(t.matches("Traits/Tank") for t in self.basic_traits)
+
+    @property
+    def is_transport(self) -> bool:  # most are vehicles (apart from 2 monstrous creatures)
+        return any(t.matches("Traits/Transport") for t in self.basic_traits)
 
     @property
     def is_walker(self) -> bool:  # subset of vehicles
@@ -989,10 +1011,6 @@ class Unit(RequiredUpgradeMixin, ActionsMixin, TraitsMixin, ModifiersMixin, Refe
         return any(t.matches("Traits/Amphibious") for t in self.basic_traits)
 
     @property
-    def is_infantry(self) -> bool:  # based on Painboy healing
-        return not self.is_fortification and not self.is_vehicle and not self.is_monstrous_creature
-
-    @property
     def is_mechanical(self) -> bool:  # important for healing
         return self.is_vehicle or self.is_fortification
 
@@ -1000,7 +1018,7 @@ class Unit(RequiredUpgradeMixin, ActionsMixin, TraitsMixin, ModifiersMixin, Refe
     def is_organic(self) -> bool:  # important for healing
         return not self.is_mechanical
 
-    # action-based traits
+    # action-based classifiers
     @property
     def is_jumper(self) -> bool:
         return any(a.name == "jumpPack" for a in self.elaborate_actions)
@@ -1045,6 +1063,13 @@ class Unit(RequiredUpgradeMixin, ActionsMixin, TraitsMixin, ModifiersMixin, Refe
 
 @dataclass(frozen=True)
 class Building(RequiredUpgradeMixin, TraitsMixin, ActionsMixin, ModifiersMixin, TextsMixin, Origin):
+
+    def __hash__(self) -> int:
+        return hash(str(self.path))
+
+    def __eq__(self, other: "Upgrade") -> bool:
+        return str(self.path) == str(other.path)
+
     @property
     def _produce_unit_actions(self) -> list[Action]:
         return [a for a in self.actions if a.name == "produceUnit"]

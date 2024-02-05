@@ -10,15 +10,18 @@
     passed to the next ones:
     1. Upgrades (need no context)
     2. Traits (need Upgrades as context)
-    3. BaseWeapons (need Upgrades and Traits as context)
-    4. BaseUnits (need Upgrades, Traits and BaseWeapons as context)
-    5. Buildings (need Upgrades and BaseUnits as context)
-    6. Units (need BaseUnits and Buildings as context)
+    3. Weapons (need Upgrades and Traits as context)
+    4. Units (need Upgrades, Traits and Weapons as context)
+    5. Buildings (need Upgrades, Traits, Weapons and Units as context)
+    6. Resolving Units' producers (need Units and Buildings as context)
 
-    This is done in order to be able to dereference objects from a next step with objects parsed
-    in the previous one. Dereferencing meaning replacing paths to .xml source files with actual
-    parsed objects. This is done in two steps: first during the parsing and next in a seperate
-    step after parsing (using logic contained in `dereference.py` module)
+    This is done in order to be able to dereference next step's objects with objects parsed
+    in the previous step. Dereferencing meaning replacing paths to .xml source files with actual
+    parsed objects. This is conducted in two stages: first during the parsing and next in a seperate
+    after-parsing stage (using logic contained in `dereference.py` module)
+
+    'strategyModifiers' tags and their content is used by the game AI and as such is not of
+    interest for this project.
 
 """
 import logging
@@ -34,8 +37,7 @@ from lxml.etree import XMLSyntaxError, _Element as Element
 
 from gladiunits.constants import PathLike, T, XML_DIR
 from gladiunits.data import (Action, Area, AreaModifier, Building, CATEGORIES, CategoryEffect, Data,
-                             Effect,
-                             FACTIONS, Modifier, ModifierType, Origin, Parameter, Target,
+                             Effect, FACTIONS, Modifier, ModifierType, Origin, Parameter, Target,
                              TextsMixin, Trait, Unit, Upgrade, UpgradeWrapper, Weapon, WeaponType)
 from gladiunits.dereference import dereference, get_context
 from gladiunits.utils import from_iterable
@@ -468,6 +470,12 @@ class XmlParser:
             return Trait.with_upgrade(trait, required_upgrade)
         return trait
 
+    def parse_dlc(self) -> str | None:
+        dlc = self.root.attrib.get("dlc")
+        if not dlc:
+            return None
+        return DISPLAYED_TEXTS.get(str(Path("WorldParameters") / dlc))
+
     @staticmethod
     def get_value(element: Element | None, xpath: str, value_type: T) -> T | None:
         if element is None:
@@ -496,10 +504,7 @@ class XmlParser:
 
 
 class UpgradeParser(XmlParser):
-    """Parser of 'Upgrades' .xml files.
-
-    'strategyModifiers' tag and its content is used by the game AI and as such is not of
-    interest for this project.
+    """Parser of Upgrades .xml files.
 
     Misformed source file:
         * xml/World/Upgrades/Tau/RipykaVa.xml (doubled `icon` attr)
@@ -518,9 +523,7 @@ class UpgradeParser(XmlParser):
         self._required_upgrades = [
             Origin(Path("Upgrades") / el.attrib["name"]) for el in self.root.findall(
                 "requiredUpgrades/upgrade")]
-        self._dlc = self.root.attrib.get("dlc")
-        if self._dlc:
-            self._dlc = DISPLAYED_TEXTS.get(str(Path("WorldParameters") / self._dlc))
+        self._dlc = self.parse_dlc()
 
     def to_data(self) -> UpgradeWrapper | Upgrade:  # override
         upgrade = Upgrade(
@@ -552,7 +555,7 @@ def parse_upgrades(sort=False) -> list[Upgrade]:
 
 
 class TraitParser(XmlParser):
-    """Parser of 'Traits' .xml files.
+    """Parser of Traits .xml files.
 
     Misformed source file:
         * xml/World/Traits/ChaosSpaceMarines/RunesOfTheBloodGod.xml (missing whitespace)
@@ -698,6 +701,8 @@ def parse_traits(upgrades: Iterable[Upgrade], sort=False) -> list[Trait]:
 
 
 class WeaponParser(XmlParser):
+    """Parser of Weapons .xml files.
+    """
     ROOT_TAG = "weapon"
     ALIASES = {
         "Mechatendrils": "Meltagun",
@@ -768,6 +773,8 @@ def parse_weapons(
 
 
 class _ActionSubParser(XmlParser):
+    """Sub-parser of sub-element of <actions> XML tag.
+    """
     @property
     def name(self) -> str:  # override
         return self.root.tag
@@ -840,6 +847,8 @@ class _ActionSubParser(XmlParser):
 
 
 class UnitParser(XmlParser):
+    """Parser of Units .xml files.
+    """
     ROOT_TAG = "unit"
 
     def __init__(self, file: PathLike, context: dict[str, Data]) -> None:
@@ -860,6 +869,7 @@ class UnitParser(XmlParser):
         self._traits = tuple(
             self.parse_trait(el) for el in traits_el) if traits_el is not None else ()
         self._required_upgrade = self.get_required_upgrade_from_context()
+        self._dlc = self.parse_dlc()
 
     def _parse_weapon(self, weapon_el: Element) -> Weapon:
         name, count, enabled = weapon_el.attrib["name"], weapon_el.attrib.get(
@@ -873,8 +883,8 @@ class UnitParser(XmlParser):
             raise ValueError(f"Weapon not retrievable: {name!r}")
         count = int(count) if count else 1
         enabled = True if not enabled else False
-        required_upgrade = self.parse_required_upgrade(weapon_el)
-        return Weapon.with_additional_data(weapon, count, enabled, required_upgrade)
+        return Weapon.with_additional_data(
+            weapon, count, enabled, self.parse_required_upgrade(weapon_el))
 
     def to_data(self) -> Unit:  # override
         return Unit(
@@ -889,7 +899,8 @@ class UnitParser(XmlParser):
             actions=self._actions,
             traits=self._traits,
             required_upgrade=self._required_upgrade,
-            building=None
+            dlc=self._dlc,
+            producer=None
         )
 
 
@@ -911,6 +922,8 @@ def parse_units(
 
 
 class BuildingParser(XmlParser):
+    """Parser of Building .xml files.
+    """
     ROOT_TAG = "building"
 
     def __init__(self, file: PathLike, context: dict[str, Data]) -> None:
@@ -968,8 +981,8 @@ def parse_all(
     buildings = parse_buildings(upgrades, traits, weapons, units, sort=sort)
     total = sum(1 for _ in [*upgrades, *traits, *weapons, *units, *buildings])
     _log.info(f"All parsing complete. Total {total} objects parsed")
-    _log.info(f"Enhancing units with buildings data...")
-    units = enhance_units(units, buildings)
+    _log.info(f"Resolving unit producers...")
+    units = resolve_producers(units, buildings)
     return upgrades, traits, weapons, units, buildings
 
 
@@ -986,18 +999,33 @@ def from_origin(origin: Origin, context: dict[str, Data] | None = None) -> Data:
     raise ValueError(f"Invalid origin for parsing: '{origin}'")
 
 
-def enhance_units(units: Iterable[Unit], buildings: Iterable[Building]) -> list[Unit]:
+def resolve_producers(units: Iterable[Unit], buildings: Iterable[Building]) -> list[Unit]:
     context = {}
     for building in buildings:
         for pu in building.produced_units:
             context[str(pu.category_path)] = building
-    enhanced_units = []
+
+    resolved_with_buildings = []
     for unit in units:
         found = context.get(str(unit.category_path))
         if found:
-            enhanced_units.append(Unit.with_building(unit, found))
+            resolved_with_buildings.append(Unit.with_producer(unit, found))
         else:
-            enhanced_units.append(unit)
-    return enhanced_units
+            resolved_with_buildings.append(unit)
 
+    context = {}
+    for unit in resolved_with_buildings:
+        for action in unit.actions:
+            if action.produced_unit:
+                context[str(action.produced_unit.category_path)] = unit
+                continue
 
+    resolved_with_units = []
+    for unit in resolved_with_buildings:
+        found = context.get(str(unit.category_path))
+        if found:
+            resolved_with_units.append(Unit.with_producer(unit, found))
+        else:
+            resolved_with_units.append(unit)
+
+    return resolved_with_units
