@@ -59,7 +59,7 @@ class File:
     def __init__(self, file: PathLike) -> None:
         self._file = Path(file)
         if not self.file.is_file():
-            raise FileNotFoundError(f"Not a file: '{self.file}'")
+            raise FileNotFoundError(f"not a file: '{self.file}'")
 
 
 class _EntryLine:
@@ -87,7 +87,7 @@ class _EntryLine:
 
     def __init__(self, line: str, category: str) -> None:
         if not self.is_valid(line):
-            raise ValueError(f"Invalid entry line: '{line}'")
+            raise ValueError(f"invalid entry line: '{line}'")
         self._line, self._category = line, category
         self._ref = None
         self._name = self._parse_name()
@@ -112,7 +112,7 @@ class _EntryLine:
         compiled_pattern = re.compile(pattern)
         match = compiled_pattern.search(text)
         if not match:
-            raise ValueError(f"Cannot parse {attr!r} in '{text}'")
+            raise ValueError(f"cannot parse {attr!r} in '{text}'")
         return match.group(1)
 
     def _parse_name(self) -> str:
@@ -148,7 +148,7 @@ class _CoreFileParser(File):
     def __init__(self, file: PathLike) -> None:
         super().__init__(file)
         if self.category not in CATEGORIES:
-            raise ValueError(f"Unknown category: {self.category!r}")
+            raise ValueError(f"unknown category: {self.category!r}")
         self._entry_lines = []
         for line in self.lines:
             if _EntryLine.is_valid(line):
@@ -230,7 +230,7 @@ class Xml(File):
         self._origin = Origin(self.file)
         self._texts = get_texts(self.origin)
         if self.file.suffix.lower() != ".xml":
-            raise ValueError(f"Not a XML file: '{self.file}'")
+            raise ValueError(f"not a XML file: '{self.file}'")
         parser = lxml.etree.XMLParser(remove_comments=True)
         try:
             self._root: Element = lxml.etree.parse(self.file, parser).getroot()
@@ -328,7 +328,7 @@ class XmlParser:
 
     def _validate_root_tag(self) -> None:
         if self.ROOT_TAG and self.root.tag != self.ROOT_TAG:
-            raise ValueError(f"Invalid root tag: {self.root.tag!r}")
+            raise ValueError(f"invalid root tag: {self.root.tag!r}")
 
     def _get_context_value(self, origin: Origin) -> Data | Origin:
         data = self._context.get(str(origin.category_path))
@@ -397,7 +397,7 @@ class XmlParser:
             required_upgrade = f"Upgrades/{required_upgrade}"
             upgrade = self._context.get(required_upgrade)
             if not upgrade:
-                raise ValueError(f"Upgrade not retrievable: {required_upgrade!r}")
+                raise ValueError(f"upgrade not retrievable: {required_upgrade!r}")
             return upgrade
         return None
 
@@ -464,7 +464,7 @@ class XmlParser:
         name = f"Traits/{name}"
         trait = self._context.get(name)
         if not trait:
-            raise ValueError(f"Trait not retrievable: {name!r}")
+            raise ValueError(f"trait not retrievable: {name!r}")
         required_upgrade = self.parse_required_upgrade(trait_el)
         if required_upgrade:
             return Trait.with_upgrade(trait, required_upgrade)
@@ -516,10 +516,10 @@ class UpgradeParser(XmlParser):
         super().__init__(file)
         if (self.xml.file.parent.name not in FACTIONS
                 or self.xml.file.parent.parent.name != "Upgrades"):
-            raise ValueError(f"Invalid input file: {self.xml.file}")
+            raise ValueError(f"invalid input file: {self.xml.file}")
         self._reference = self.parse_reference(self.root)
         self._tier = self.root.attrib.get("position")
-        self._tier = int(self._tier) if self._tier else 0
+        self._tier = int(self._tier) if self._tier else None
         self._required_upgrades = [
             Origin(Path("Upgrades") / el.attrib["name"]) for el in self.root.findall(
                 "requiredUpgrades/upgrade")]
@@ -643,7 +643,7 @@ class TraitParser(XmlParser):
         super().__init__(file, context)
         if (self.xml.file.parent.name != "Traits"
                 and self.xml.file.parent.parent.name != "Traits"):
-            raise ValueError(f"Invalid input file: {self.xml.file}")
+            raise ValueError(f"invalid input file: {self.xml.file}")
         self._reference = self.parse_reference(self.root)
         self._type = self.root.attrib.get("category")
         self._modifiers = self.parse_modifiers(self.root)
@@ -713,7 +713,7 @@ class WeaponParser(XmlParser):
     def __init__(self, file: PathLike, context: dict[str, Data]) -> None:
         super().__init__(file, context)
         if self.xml.file.parent.name != "Weapons":
-            raise ValueError(f"Invalid input file: {self.xml.file}")
+            raise ValueError(f"invalid input file: {self.xml.file}")
         self._reference = self.parse_reference(self.root)
         self._modifiers = self.parse_modifiers(self.root)
         self._type = self._parse_type()
@@ -794,7 +794,7 @@ class _ActionSubParser(XmlParser):
         self._conditions = self.parse_effects(self.root, "conditions")
         self._targets = self._parse_targets()
         self._required_upgrade = self.parse_required_upgrade(self.root)
-        self._required_weapon = self._parse_required_weapon()
+        self._required_weapons = self._parse_required_weapons()
 
     def _parse_texts(self, faction: str) -> TextsMixin | None:
         path = self.root.attrib.get("name")
@@ -822,15 +822,26 @@ class _ActionSubParser(XmlParser):
             return ()
         return tuple(self.parse_target(el) for el in root)
 
-    def _parse_required_weapon(self) -> Weapon | None:
+    def _parse_required_weapons(self) -> tuple[Weapon, ...]:
+        names = []
         name = self.root.attrib.get("weaponSlotName")
-        if not name:
-            return None
-        name = f"Weapons/{WeaponParser.get_name(name)}"
-        weapon = self._context.get(name)
-        if not weapon:
-            raise ValueError(f"Weapon not retrievable: {name!r}")
-        return weapon
+        if name:
+            names.append(name)
+        else:
+            result = self.root.attrib.get("weaponSlotNames")
+            if result:
+                names.extend(result.split())
+        if not names:
+            return ()
+
+        weapons = []
+        for name in names:
+            name = f"Weapons/{WeaponParser.get_name(name)}"
+            weapon = self._context.get(name)
+            if not weapon:
+                raise ValueError(f"weapon not retrievable: {name!r}")
+            weapons.append(weapon)
+        return tuple(weapons)
 
     def to_data(self) -> Action:
         return Action(
@@ -842,7 +853,7 @@ class _ActionSubParser(XmlParser):
             conditions=self._conditions,
             targets=self._targets,
             required_upgrade=self._required_upgrade,
-            required_weapon=self._required_weapon,
+            required_weapons=self._required_weapons,
         )
 
 
@@ -855,7 +866,7 @@ class UnitParser(XmlParser):
         super().__init__(file, context)
         if (self.xml.file.parent.parent.name != "Units"
                 and self.xml.file.parent.parent.parent.name != "Units"):
-            raise ValueError(f"Invalid input file: {self.xml.file}")
+            raise ValueError(f"invalid input file: {self.xml.file}")
         self._reference = self.parse_reference(self.root)
         group_el = self.root.find("group")
         self._group_size = int(group_el.attrib["size"]) if group_el is not None else 1
@@ -877,10 +888,10 @@ class UnitParser(XmlParser):
         name = f"Weapons/{WeaponParser.get_name(name)}"
         valid_attrs = "name", "slotName", "count", "enabled", "requiredUpgrade"
         if any(attr not in valid_attrs for attr in weapon_el.attrib):
-            raise ValueError(f"Unrecognized weapon attrs among: {[*weapon_el.attrib]}")
+            raise ValueError(f"unrecognized weapon attrs among: {[*weapon_el.attrib]}")
         weapon = self._context.get(name)
         if not weapon:
-            raise ValueError(f"Weapon not retrievable: {name!r}")
+            raise ValueError(f"weapon not retrievable: {name!r}")
         count = int(count) if count else 1
         enabled = True if not enabled else False
         return Weapon.with_additional_data(
@@ -930,7 +941,7 @@ class BuildingParser(XmlParser):
         super().__init__(file, context)
         if (self.xml.file.parent.parent.name != "Buildings"
                 and self.xml.file.parent.parent.parent.name != "Buildings"):
-            raise ValueError(f"Invalid input file: {self.xml.file}")
+            raise ValueError(f"invalid input file: {self.xml.file}")
         self._modifiers = self.parse_modifiers(self.root)
         actions_el = self.root.find("actions")
         self._actions = tuple(
@@ -980,9 +991,9 @@ def parse_all(
     units = parse_units(upgrades, traits, weapons, sort=sort)
     buildings = parse_buildings(upgrades, traits, weapons, units, sort=sort)
     total = sum(1 for _ in [*upgrades, *traits, *weapons, *units, *buildings])
-    _log.info(f"All parsing complete. Total {total} objects parsed")
     _log.info(f"Resolving unit producers...")
     units = resolve_producers(units, buildings)
+    _log.info(f"All parsing complete. Total {total} objects parsed")
     return upgrades, traits, weapons, units, buildings
 
 
@@ -996,7 +1007,7 @@ def from_origin(origin: Origin, context: dict[str, Data] | None = None) -> Data:
         return WeaponParser(file, context).to_data()
     elif origin.faction == "Units":
         return UnitParser(file, context).to_data()
-    raise ValueError(f"Invalid origin for parsing: '{origin}'")
+    raise ValueError(f"invalid origin for parsing: '{origin}'")
 
 
 def resolve_producers(units: Iterable[Unit], buildings: Iterable[Building]) -> list[Unit]:

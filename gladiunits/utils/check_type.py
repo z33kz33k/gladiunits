@@ -39,7 +39,7 @@ def _validate_type(value: Any, type_: Type) -> None:
     :raises TypeError: on value not being of type_
     """
     if not isinstance(value, type_):
-        raise TypeError(f"Input value ({value}) can only be of a '{fullqualname(type_)}' type, "
+        raise TypeError(f"input value ({value}) can only be of a '{fullqualname(type_)}' type, "
                         f"got: '{type(value)}'.")
 
 
@@ -49,7 +49,7 @@ def _validate_type_or_none(value: Any, type_: Type) -> None:
     :raises TypeError: on value not being of type_ or None
     """
     if not (isinstance(value, type_) or value is None):
-        raise TypeError(f"Input value ({value}) can only be of a '{fullqualname(type_)}' type or "
+        raise TypeError(f"input value ({value}) can only be of a '{fullqualname(type_)}' type or "
                         f"None, got: '{type(value)}'.")
 
 
@@ -60,7 +60,7 @@ def _validate_types(value: Any, *types: Type) -> None:
     """
     if not isinstance(value, types):
         namestr = types_to_namestr(types)
-        raise TypeError(f"Input value ({value}) can only be of either of a [{namestr}] types, "
+        raise TypeError(f"input value ({value}) can only be of either of a [{namestr}] types, "
                         f"got: '{type(value)}'.")
 
 
@@ -71,7 +71,7 @@ def _validate_types_or_none(value: Any, *types: Type) -> None:
     """
     if not (isinstance(value, types) or value is None):
         namestr = types_to_namestr(types)
-        raise TypeError(f"Input value ({value}) can only be of either of [{namestr}] types or "
+        raise TypeError(f"input value ({value}) can only be of either of [{namestr}] types or "
                         f"None, got: '{type(value)}'.")
 
 

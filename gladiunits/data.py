@@ -386,7 +386,7 @@ class CategoryEffect(Effect):
 
 @dataclass(frozen=True)
 class Upgrade(ReferenceMixin, TextsMixin, Origin):
-    tier: int
+    tier: int | None
     dlc: str | None
     required_upgrades: tuple[Union["Upgrade",  Origin], ...] = field(default=())
 
@@ -394,8 +394,8 @@ class Upgrade(ReferenceMixin, TextsMixin, Origin):
         super().__post_init__()
         if self.category != "Upgrades":
             raise ValueError(f"not a path to an upgrade .xml: {self.path}")
-        if self.tier not in range(11):
-            raise ValueError("tier must be an integer between 0 and 10")
+        if self.tier and self.tier not in range(1, 11):
+            raise ValueError("tier must be an integer between 1 and 10")
 
     def __hash__(self) -> int:
         return hash(str(self.path))
@@ -643,6 +643,10 @@ class TraitsMixin:
     def augmentable_traits(self) -> list[Trait]:
         return [t for t in self.traits if t.is_augmentable]
 
+    def has_trait(self, trait: str, basic=True) -> bool:
+        traits = self.basic_traits if basic else self.traits
+        return any(t.matches(trait) for t in traits)
+
 
 class WeaponType(Enum):
     BEAM = 'beamWeapon'
@@ -717,7 +721,7 @@ class Action(RequiredUpgradeMixin, ModifiersMixin, ReferenceMixin):
     texts: TextsMixin | None
     conditions: tuple[Effect, ...]
     targets: tuple[Target, ...]
-    required_weapon: Weapon | None
+    required_weapons: tuple[Weapon, ...]  # can be multiple, e.g. <cycleWeapon> case
 
     def __hash__(self) -> int:
         return hash((self.name, self.texts))
@@ -778,36 +782,6 @@ class Action(RequiredUpgradeMixin, ModifiersMixin, ReferenceMixin):
         return None
 
 
-def get_mod_effects(objects: list[Data | Action], most_numerous_first=False
-                    ) -> OrderedDict[str, list[Data | Action]]:
-    effects_map = defaultdict(list)
-    for obj in objects:
-        for e in {e.name for m in obj.modifiers for e in m.effects}:
-            effects_map[e].append(obj)
-    if most_numerous_first:
-        new_map = [(k, v) for k, v in effects_map.items()]
-        new_map.sort(key=lambda pair: len(pair[1]), reverse=True)
-        return OrderedDict(new_map)
-    return OrderedDict(sorted((k, v) for k, v in effects_map.items()))
-
-
-def get_obj(objects: list[Data | Action], name: str) -> Data | Action | None:
-    return from_iterable(objects, lambda o: o.name == name)
-
-
-def get_objects(objects: list[Data | Action], *names: str) -> list[Data | Action | None]:
-    d = {n: i for i, n in enumerate(names)}
-    retrieved = []
-    for obj in objects:
-        if obj.name in names:
-            retrieved.append((obj, d[obj.name]))
-    for name in names:  # match number of outputs with number of inputs
-        if name not in {r.name for r, _ in retrieved}:
-            retrieved.append((None, d[name]))
-    retrieved.sort(key=lambda r: r[1])  # preserve the input ordering
-    return [r[0] for r in retrieved]
-
-
 @dataclass(frozen=True)
 class ActionsMixin:
     actions: tuple[Action, ...]
@@ -830,11 +804,15 @@ class ActionsMixin:
 
     @property
     def weapon_requiring_actions(self) -> list[Action]:
-        return [a for a in self.elaborate_actions if a.required_weapon]
+        return [a for a in self.elaborate_actions if a.required_weapons]
 
     @property
     def augmentable_actions(self) -> list[Action]:
         return [a for a in self.elaborate_actions if a.is_augmentable]
+
+    def has_action(self, action: str, elaborate=True) -> bool:
+        actions = self.elaborate_actions if elaborate else self.actions
+        return any(a.name == action for a in actions)
 
 
 @dataclass(frozen=True)
@@ -940,23 +918,23 @@ class Unit(RequiredUpgradeMixin, ActionsMixin, TraitsMixin, ModifiersMixin, Refe
     # trait-based classifiers
     @property
     def is_artefact(self) -> bool:
-        return any(t.matches("Traits/Artefact") for t in self.basic_traits)
+        return self.has_trait("Traits/Artefact")
 
     @property
     def is_fortification(self) -> bool:  # most are transports too (hold cargo)
-        return any(t.matches("Traits/Fortification") for t in self.basic_traits)
+        return self.has_trait("Traits/Fortification")
 
     @property
     def is_vehicle(self) -> bool:
-        return any(t.matches("Traits/Vehicle") for t in self.basic_traits)
+        return self.has_trait("Traits/Vehicle")
 
     @property
     def is_hero(self) -> bool:
-        return any(t.matches("Traits/Hero") for t in self.basic_traits)
+        return self.has_trait("Traits/Hero")
 
     @property
     def is_monstrous_creature(self) -> bool:
-        return any(t.matches("Traits/MonstrousCreature") for t in self.basic_traits)
+        return self.has_trait("Traits/MonstrousCreature")
 
     @property
     def is_infantry(self) -> bool:  # based on Painboy healing
@@ -964,51 +942,67 @@ class Unit(RequiredUpgradeMixin, ActionsMixin, TraitsMixin, ModifiersMixin, Refe
 
     @property
     def is_tank(self) -> bool:  # subset of vehicles
-        return any(t.matches("Traits/Tank") for t in self.basic_traits)
+        return self.has_trait("Traits/Tank")
 
     @property
     def is_transport(self) -> bool:  # most are vehicles (apart from 2 monstrous creatures)
-        return any(t.matches("Traits/Transport") for t in self.basic_traits)
+        return self.has_trait("Traits/Transport")
 
     @property
     def is_walker(self) -> bool:  # subset of vehicles
-        return any(t.matches("Traits/Walker") for t in self.basic_traits)
+        return self.has_trait("Traits/Walker")
 
     @property
     def is_bike(self) -> bool:  # only two
-        return any(t.matches("Traits/Bike") for t in self.basic_traits)
+        return self.has_trait("Traits/Bike")
 
     @property
     def is_jetbike(self) -> bool:
-        return any(t.matches("Traits/Jetbike") for t in self.basic_traits)
+        return self.has_trait("Traits/Jetbike")
+
+    @property
+    def is_jetpack_user(self) -> bool:
+        return self.has_trait("Traits/JetPack")
 
     @property
     def is_flyer(self) -> bool:  # subset of vehicles
-        return any(t.matches("Traits/Flyer") for t in self.basic_traits)
+        return self.has_trait("Traits/Flyer")
 
     @property
     def is_skimmer(self) -> bool:
-        return any(t.matches("Traits/Skimmer") for t in self.basic_traits)
+        return self.has_trait("Traits/Skimmer")
 
     @property
     def is_open_topped(self) -> bool:  # subset of vehicles
-        return any(t.matches("Traits/OpenTopped") for t in self.basic_traits)
+        return self.has_trait("Traits/OpenTopped")
 
     @property
     def is_gargantuan(self) -> bool:
-        return any(t.matches("Traits/Gargantuan") for t in self.basic_traits)
+        return self.has_trait("Traits/Gargantuan")
 
     @property
     def is_psyker(self) -> bool:
-        return any(t.matches("Traits/Psyker") for t in self.basic_traits)
+        return self.has_trait("Traits/Psyker")
 
     @property
     def is_daemon(self) -> bool:
-        return any(t.matches("Traits/Daemon") for t in self.basic_traits)
+        return self.has_trait("Traits/Daemon")
 
     @property
     def is_amphibious(self) -> bool:  # only one (Chimera)
-        return any(t.matches("Traits/Amphibious") for t in self.basic_traits)
+        return self.has_trait("Traits/Amphibious")
+
+    @property
+    def is_fearless(self) -> bool:
+        return self.has_trait("Traits/Fearless")
+
+    @property
+    def is_relentless(self) -> bool:
+        return self.has_trait("Traits/Relentless")
+
+    @property
+    def is_zealot(self) -> bool:
+        return self.has_trait("Traits/Zealot")
 
     @property
     def is_mechanical(self) -> bool:  # important for healing
@@ -1021,15 +1015,15 @@ class Unit(RequiredUpgradeMixin, ActionsMixin, TraitsMixin, ModifiersMixin, Refe
     # action-based classifiers
     @property
     def is_jumper(self) -> bool:
-        return any(a.name == "jumpPack" for a in self.elaborate_actions)
+        return self.has_action("jumpPack")
 
     @property
     def is_scout(self) -> bool:
-        return any(a.name == "scout" for a in self.elaborate_actions)
+        return self.has_action("scout")
 
     @property
     def is_tile_cleaner(self) -> bool:
-        return any("clearTile" in a.name for a in self.elaborate_actions)
+        return self.has_action("clearTileUnitAbility")
 
     @property
     def is_healer(self) -> bool:
@@ -1053,12 +1047,15 @@ class Unit(RequiredUpgradeMixin, ActionsMixin, TraitsMixin, ModifiersMixin, Refe
 
     @property
     def is_settler(self) -> bool:
-        return any(a.name == "foundCity" for a in self.elaborate_actions)
+        return self.has_action("foundCity")
 
     @property
     def is_skirmisher(self) -> bool:
-        return any(a.name == "jink" for a in self.elaborate_actions) and any(
-            a.name == "turboBoost" for a in self.elaborate_actions)
+        return self.has_action("jink") and self.has_action("turboBoost")
+
+    @property
+    def is_grenadier(self) -> bool:
+        return self.has_action("throwGrenade")
 
 
 @dataclass(frozen=True)
@@ -1086,3 +1083,33 @@ class Building(RequiredUpgradeMixin, TraitsMixin, ActionsMixin, ModifiersMixin, 
                 if param.value.category_path == unit.category_path:
                     return action
         return None
+
+
+def get_mod_effects(objects: list[Data | Action], most_numerous_first=False
+                    ) -> OrderedDict[str, list[Data | Action]]:
+    effects_map = defaultdict(list)
+    for obj in objects:
+        for e in {e.name for m in obj.modifiers for e in m.effects}:
+            effects_map[e].append(obj)
+    if most_numerous_first:
+        new_map = [(k, v) for k, v in effects_map.items()]
+        new_map.sort(key=lambda pair: len(pair[1]), reverse=True)
+        return OrderedDict(new_map)
+    return OrderedDict(sorted((k, v) for k, v in effects_map.items()))
+
+
+def get_obj(objects: list[Data | Action], name: str) -> Data | Action | None:
+    return from_iterable(objects, lambda o: o.name == name)
+
+
+def get_objects(objects: list[Data | Action], *names: str) -> list[Data | Action | None]:
+    d = {n: i for i, n in enumerate(names)}
+    retrieved = []
+    for obj in objects:
+        if obj.name in names:
+            retrieved.append((obj, d[obj.name]))
+    for name in names:  # match number of outputs with number of inputs
+        if name not in {r.name for r, _ in retrieved}:
+            retrieved.append((None, d[name]))
+    retrieved.sort(key=lambda r: r[1])  # preserve the input ordering
+    return [r[0] for r in retrieved]

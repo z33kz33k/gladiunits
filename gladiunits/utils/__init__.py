@@ -79,7 +79,7 @@ def getdir(path: PathLike, create_missing=True) -> Path:
         dir_.mkdir(parents=True, exist_ok=True)
     else:
         if dir_.is_file():
-            raise NotADirectoryError(f"Not a directory: '{dir_.resolve()}'")
+            raise NotADirectoryError(f"not a directory: '{dir_.resolve()}'")
     return dir_
 
 
@@ -89,9 +89,9 @@ def getfile(path: PathLike, ext="") -> Path:
     """
     f = Path(path)
     if not f.is_file():
-        raise FileNotFoundError(f"Not a file: '{f.resolve()}'")
+        raise FileNotFoundError(f"not a file: '{f.resolve()}'")
     if ext and not f.suffix.lower() == ext.lower():
-        raise ValueError(f"Not a {ext!r} file")
+        raise ValueError(f"not a {ext!r} file")
     return f
 
 

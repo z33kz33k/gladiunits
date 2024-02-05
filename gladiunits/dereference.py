@@ -34,7 +34,6 @@ def get_context(
         buildings: list[Building] = ()) -> tuple[dict[str, Data], list[Data]]:
     upgrades = upgrades or []
     upgrades, upgrade_wrappers = sift_upgrades(*upgrades)
-    upgrade_wrappers.sort(key=lambda u: u.upgrade.tier)
     parsed = [*upgrades, *upgrade_wrappers, *traits, *weapons, *units, *buildings]
     resolved, unresolved = {}, []
     for parsed_item in parsed:
