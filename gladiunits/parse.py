@@ -486,6 +486,10 @@ class XmlParser:
             return None
         return value_type(value)
 
+    def get_required_upgrade_from_context(self) -> Upgrade | None:
+        name = str(Path("Upgrades") / "/".join(self.origin.category_path.parts[1:]))
+        return self._context.get(name)
+
     @abstractmethod
     def to_data(self) -> Data | Action:
         raise NotImplementedError
@@ -855,6 +859,7 @@ class UnitParser(XmlParser):
                 "actions"))
         self._traits = tuple(
             self.parse_trait(el) for el in traits_el) if traits_el is not None else ()
+        self._required_upgrade = self.get_required_upgrade_from_context()
 
     def _parse_weapon(self, weapon_el: Element) -> Weapon:
         name, count, enabled = weapon_el.attrib["name"], weapon_el.attrib.get(
@@ -882,7 +887,9 @@ class UnitParser(XmlParser):
             group_size=self._group_size,
             weapons=self._weapons,
             actions=self._actions,
-            traits=self._traits
+            traits=self._traits,
+            required_upgrade=self._required_upgrade,
+            building=None
         )
 
 
@@ -919,6 +926,7 @@ class BuildingParser(XmlParser):
         traits_el = self.root.find("traits")
         self._traits = tuple(
             self.parse_trait(el) for el in traits_el) if traits_el is not None else ()
+        self._required_upgrade = self.get_required_upgrade_from_context()
 
     def to_data(self) -> Building:  # override
         return Building(
@@ -928,7 +936,8 @@ class BuildingParser(XmlParser):
             flavor=self.texts.flavor,
             modifiers=self._modifiers,
             actions=self._actions,
-            traits=self._traits
+            traits=self._traits,
+            required_upgrade=self._required_upgrade
         )
 
 
@@ -959,6 +968,8 @@ def parse_all(
     buildings = parse_buildings(upgrades, traits, weapons, units, sort=sort)
     total = sum(1 for _ in [*upgrades, *traits, *weapons, *units, *buildings])
     _log.info(f"All parsing complete. Total {total} objects parsed")
+    _log.info(f"Enhancing units with buildings data...")
+    units = enhance_units(units, buildings)
     return upgrades, traits, weapons, units, buildings
 
 
@@ -973,4 +984,20 @@ def from_origin(origin: Origin, context: dict[str, Data] | None = None) -> Data:
     elif origin.faction == "Units":
         return UnitParser(file, context).to_data()
     raise ValueError(f"Invalid origin for parsing: '{origin}'")
+
+
+def enhance_units(units: Iterable[Unit], buildings: Iterable[Building]) -> list[Unit]:
+    context = {}
+    for building in buildings:
+        for pu in building.produced_units:
+            context[str(pu.category_path)] = building
+    enhanced_units = []
+    for unit in units:
+        found = context.get(str(unit.category_path))
+        if found:
+            enhanced_units.append(Unit.with_building(unit, found))
+        else:
+            enhanced_units.append(unit)
+    return enhanced_units
+
 

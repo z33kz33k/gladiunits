@@ -11,7 +11,7 @@ from collections import OrderedDict, defaultdict
 from enum import Enum
 from dataclasses import dataclass, fields, is_dataclass, field
 from pathlib import Path
-from typing import Any, Literal, ClassVar, Type, TypeAlias, Union
+from typing import Any, Literal, ClassVar, Optional, Type, TypeAlias, Union
 
 from gladiunits.utils import from_iterable
 
@@ -475,6 +475,12 @@ class RequiredUpgradeMixin:
     def is_basic(self) -> bool:
         return not self.required_upgrade
 
+    @property
+    def tier(self) -> int | None:
+        if not self.required_upgrade:
+            return None
+        return self.required_upgrade.tier
+
 
 @dataclass(frozen=True)
 class Modifier(RequiredUpgradeMixin):
@@ -818,9 +824,11 @@ class ActionsMixin:
 
 
 @dataclass(frozen=True)
-class Unit(ActionsMixin, TraitsMixin, ModifiersMixin, ReferenceMixin, TextsMixin, Origin):
+class Unit(RequiredUpgradeMixin, ActionsMixin, TraitsMixin, ModifiersMixin, ReferenceMixin,
+           TextsMixin, Origin):
     group_size: int
     weapons: tuple[Weapon, ...]
+    building: Optional["Building"]
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -832,6 +840,38 @@ class Unit(ActionsMixin, TraitsMixin, ModifiersMixin, ReferenceMixin, TextsMixin
 
     def __eq__(self, other: "Upgrade") -> bool:
         return str(self.path) == str(other.path)
+
+    @classmethod
+    def with_building(
+            cls, unit: "Unit", building: "Building") -> "Unit":
+        return cls(
+            path=unit.path,
+            name=unit.name,
+            description=unit.description,
+            flavor=unit.flavor,
+            reference=unit.reference,
+            modifiers=unit.modifiers,
+            group_size=unit.group_size,
+            weapons=unit.weapons,
+            actions=unit.actions,
+            traits=unit.traits,
+            required_upgrade=unit.required_upgrade,
+            building=building
+        )
+
+    # TODO: edge-cases like Tau drones, some Necron and Tyranid units
+    @property
+    def tier(self) -> int | None:  # override
+        tier = super().tier
+        if super().tier is None and self.building and self.building.required_upgrade:
+            tier = self.building.required_upgrade.tier
+        if (tier is None
+                and not self.is_artefact
+                and not self.is_fortification
+                and self.faction != "Neutral"
+                and self.is_infantry):
+            return 0
+        return tier
 
     @property
     def all_effects(self) -> list[Effect]:  # override
@@ -882,6 +922,9 @@ class Unit(ActionsMixin, TraitsMixin, ModifiersMixin, ReferenceMixin, TextsMixin
 
     # classification traits
     @property
+    def is_artefact(self) -> bool:
+        return any(t.matches("Traits/Artefact") for t in self.basic_traits)
+
     def is_vehicle(self) -> bool:
         return any(t.matches("Traits/Vehicle") for t in self.basic_traits)
 
@@ -1001,10 +1044,20 @@ class Unit(ActionsMixin, TraitsMixin, ModifiersMixin, ReferenceMixin, TextsMixin
 
 
 @dataclass(frozen=True)
-class Building(TraitsMixin, ActionsMixin, ModifiersMixin, TextsMixin, Origin):
+class Building(RequiredUpgradeMixin, TraitsMixin, ActionsMixin, ModifiersMixin, TextsMixin, Origin):
+    @property
+    def _produce_unit_actions(self) -> list[Action]:
+        return [a for a in self.actions if a.name == "produceUnit"]
+
     @property
     def produced_units(self) -> list[Unit]:
-        produce_actions = [a for a in self.actions if a.name == "produceUnit"]
-        if not produce_actions:
+        if not self._produce_unit_actions:
             return []
-        return [p.value for a in produce_actions for p in a.params if p.type == "unit"]
+        return [p.value for a in self._produce_unit_actions for p in a.params if p.type == "unit"]
+
+    def get_matching_action(self, unit: "Unit") -> Action | None:
+        for action in self._produce_unit_actions:
+            for param in action.params:
+                if param.value.category_path == unit.category_path:
+                    return action
+        return None
