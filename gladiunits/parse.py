@@ -773,7 +773,7 @@ def parse_weapons(
 
 
 class _ActionSubParser(XmlParser):
-    """Sub-parser of sub-element of <actions> XML tag.
+    """Parser for <actions> XML tag's sub-elements.
     """
     @property
     def name(self) -> str:  # override
@@ -789,7 +789,7 @@ class _ActionSubParser(XmlParser):
         self._texts = self._parse_texts(faction)
         self._params = tuple(
             self.to_param(k, v, "Actions") for (k, v) in self.root.attrib.items()
-            if k not in ("requiredUpgrade", "weaponSlotName"))
+            if k not in ("requiredUpgrade", "weaponSlotName", "weaponSlotNames"))
         self._modifiers = self.parse_modifiers(self.root)
         self._conditions = self.parse_effects(self.root, "conditions")
         self._targets = self._parse_targets()
@@ -933,7 +933,7 @@ def parse_units(
 
 
 class BuildingParser(XmlParser):
-    """Parser of Building .xml files.
+    """Parser of Buildings .xml files.
     """
     ROOT_TAG = "building"
 

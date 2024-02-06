@@ -8,10 +8,11 @@
 
 """
 from collections import OrderedDict, defaultdict
-from enum import Enum
-from dataclasses import dataclass, fields, is_dataclass, field
+from dataclasses import dataclass, field, fields, is_dataclass
+from enum import Enum, auto
+from functools import lru_cache
 from pathlib import Path
-from typing import Any, Literal, ClassVar, Optional, Type, TypeAlias, Union
+from typing import Any, ClassVar, Literal, Type, TypeAlias, Union
 
 from gladiunits.utils import from_iterable
 
@@ -644,6 +645,11 @@ class TraitsMixin:
         return [t for t in self.traits if t.is_augmentable]
 
     def has_trait(self, trait: str, basic=True) -> bool:
+        if not trait:
+            return False
+        if not trait.startswith("Traits/"):
+            trait = trait[0].upper() + trait[1:]
+            trait = f"Traits/{trait}"
         traits = self.basic_traits if basic else self.traits
         return any(t.matches(trait) for t in traits)
 
@@ -869,21 +875,38 @@ class Unit(RequiredUpgradeMixin, ActionsMixin, TraitsMixin, ModifiersMixin, Refe
         return tier
 
     @property
+    def cost(self) -> dict[str, float]:
+        return self._get_cost()
+
+    @property
+    def upkeep(self) -> dict[str, float]:
+        return self._get_cost(upkeep=True)
+
+    @property
     def all_effects(self) -> list[Effect]:  # override
         weapon_effects = [e for w in self.weapons for e in w.all_effects]
         action_effects = [e for a in self.actions for e in a.all_effects]
         trait_effects = [e for t in self.traits for e in t.all_effects]
         return [*super().all_effects, *weapon_effects, *action_effects, *trait_effects]
 
+    @lru_cache()
     def _get_key_property(self, name: str, convert_to: Type = None) -> ParamValue | None:
-        effect = from_iterable(self.mod_effects, lambda e: e.name == name)
-        if not effect:
-            return None
-        param = from_iterable(effect.params, lambda p: p.type in ("base", "max"))
-        value = param.value if param else None
-        if convert_to and value is not None:
-            return convert_to(value)
-        return value
+        for effect in [e for e in self.mod_effects if len(e.params) == 1]:
+            if effect.name == name:
+                param = effect.params[0]
+                return param.value if convert_to is None else convert_to(param.value)
+        return None
+
+    @lru_cache()
+    def _get_cost(self, upkeep=False) -> dict[str, float]:
+        suffix = "Upkeep" if upkeep else "Cost"
+        cost_effects = [e for e in self.mod_effects
+                        if len(e.params) == 1 and e.name.endswith(suffix)]
+        cost = {}
+        for effect in cost_effects:
+            cost[effect.name.replace(suffix, "")] = float(effect.params[0].value)
+        cost["total"] = sum(cost.values())
+        return cost
 
     # key properties
     @property
@@ -918,23 +941,23 @@ class Unit(RequiredUpgradeMixin, ActionsMixin, TraitsMixin, ModifiersMixin, Refe
     # trait-based classifiers
     @property
     def is_artefact(self) -> bool:
-        return self.has_trait("Traits/Artefact")
+        return self.has_trait("Artefact")
 
     @property
     def is_fortification(self) -> bool:  # most are transports too (hold cargo)
-        return self.has_trait("Traits/Fortification")
+        return self.has_trait("Fortification")
 
     @property
     def is_vehicle(self) -> bool:
-        return self.has_trait("Traits/Vehicle")
+        return self.has_trait("Vehicle")
 
     @property
     def is_hero(self) -> bool:
-        return self.has_trait("Traits/Hero")
+        return self.has_trait("Hero")
 
     @property
     def is_monstrous_creature(self) -> bool:
-        return self.has_trait("Traits/MonstrousCreature")
+        return self.has_trait("MonstrousCreature")
 
     @property
     def is_infantry(self) -> bool:  # based on Painboy healing
@@ -942,67 +965,67 @@ class Unit(RequiredUpgradeMixin, ActionsMixin, TraitsMixin, ModifiersMixin, Refe
 
     @property
     def is_tank(self) -> bool:  # subset of vehicles
-        return self.has_trait("Traits/Tank")
+        return self.has_trait("Tank")
 
     @property
     def is_transport(self) -> bool:  # most are vehicles (apart from 2 monstrous creatures)
-        return self.has_trait("Traits/Transport")
+        return self.has_trait("Transport")
 
     @property
     def is_walker(self) -> bool:  # subset of vehicles
-        return self.has_trait("Traits/Walker")
+        return self.has_trait("Walker")
 
     @property
     def is_bike(self) -> bool:  # only two
-        return self.has_trait("Traits/Bike")
+        return self.has_trait("Bike")
 
     @property
     def is_jetbike(self) -> bool:
-        return self.has_trait("Traits/Jetbike")
+        return self.has_trait("Jetbike")
 
     @property
     def is_jetpack_user(self) -> bool:
-        return self.has_trait("Traits/JetPack")
+        return self.has_trait("JetPack")
 
     @property
     def is_flyer(self) -> bool:  # subset of vehicles
-        return self.has_trait("Traits/Flyer")
+        return self.has_trait("Flyer")
 
     @property
     def is_skimmer(self) -> bool:
-        return self.has_trait("Traits/Skimmer")
+        return self.has_trait("Skimmer")
 
     @property
     def is_open_topped(self) -> bool:  # subset of vehicles
-        return self.has_trait("Traits/OpenTopped")
+        return self.has_trait("OpenTopped")
 
     @property
     def is_gargantuan(self) -> bool:
-        return self.has_trait("Traits/Gargantuan")
+        return self.has_trait("Gargantuan")
 
     @property
     def is_psyker(self) -> bool:
-        return self.has_trait("Traits/Psyker")
+        return self.has_trait("Psyker")
 
     @property
     def is_daemon(self) -> bool:
-        return self.has_trait("Traits/Daemon")
+        return self.has_trait("Daemon")
 
     @property
     def is_amphibious(self) -> bool:  # only one (Chimera)
-        return self.has_trait("Traits/Amphibious")
+        return self.has_trait("Amphibious")
 
     @property
     def is_fearless(self) -> bool:
-        return self.has_trait("Traits/Fearless")
+        return self.has_trait("Fearless")
 
     @property
     def is_relentless(self) -> bool:
-        return self.has_trait("Traits/Relentless")
+        return self.has_trait("Relentless")
 
     @property
     def is_zealot(self) -> bool:
-        return self.has_trait("Traits/Zealot")
+        return self.has_trait("Zealot")
 
     @property
     def is_mechanical(self) -> bool:  # important for healing
