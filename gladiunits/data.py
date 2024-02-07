@@ -153,7 +153,7 @@ class TextsMixin:
     flavor: str | None
 
 
-Data: TypeAlias = Union["UpgradeWrapper", "Upgrade", "Trait", "Weapon", "Unit"]
+Data: TypeAlias = Union["UpgradeWrapper", "Upgrade", "Trait", "Weapon", "Unit", "Building"]
 ParamValue: TypeAlias = (Data | tuple[Data, ...] | Origin | tuple[Origin, ...] | float | int |
                          str | bool)
 
@@ -549,6 +549,14 @@ class ModifiersMixin:
     def is_augmentable(self) -> bool:
         return bool(self.augmentations)
 
+    @lru_cache()
+    def get_key_property(self, name: str, convert_to: Type = None) -> ParamValue | None:
+        for effect in [e for e in self.mod_effects if len(e.params) == 1]:
+            if effect.name == name:
+                param = effect.params[0]
+                return param.value if convert_to is None else convert_to(param.value)
+        return None
+
 
 # Traits are different than Actions and Modifiers (other XML tags that can sometimes possess
 # a 'requiredUpgrade' attribute) as they come in two breeds: 1) one that doesn't ever possess
@@ -715,6 +723,33 @@ class Weapon(TraitsMixin, RequiredUpgradeMixin, ModifiersMixin, ReferenceMixin, 
         target_effects = self.target.all_effects if self.target else []
         return [*super().all_effects, *self.traits] + target_effects
 
+    # key properties
+    @property
+    def attacks(self) -> int | None:
+        result = self.get_key_property("attacks", int)
+        return result if result is not None else self.get_key_property("rangedAttacks", int)
+
+    @property
+    def melee_attacks(self) -> int | None:
+        return self.get_key_property("meleeAttacks", int)
+
+    # @property
+    # def accuracy(self) -> int | None:  # TODO: 2 params!
+    #     return self.get_key_property("accuracy", int)
+    #
+    @property
+    def melee_accuracy(self) -> int | None:
+        return self.get_key_property("meleeAccuracy", int)
+
+    @property
+    def ranged_accuracy(self) -> int | None:
+        return self.get_key_property("rangedAccuracy", int)
+
+    # classifiers
+    @property
+    def is_melee(self) -> bool:
+        return self.has_trait("Melee")
+
 
 # Some actions can be available only after an upgrade (and then, they have 'requiredUpgrade'
 # defined as one of its attributes in XML) or can be available from the start but only augmented
@@ -860,6 +895,13 @@ class Unit(RequiredUpgradeMixin, ActionsMixin, TraitsMixin, ModifiersMixin, Refe
         )
 
     @property
+    def all_effects(self) -> list[Effect]:  # override
+        weapon_effects = [e for w in self.weapons for e in w.all_effects]
+        action_effects = [e for a in self.actions for e in a.all_effects]
+        trait_effects = [e for t in self.traits for e in t.all_effects]
+        return [*super().all_effects, *weapon_effects, *action_effects, *trait_effects]
+
+    @property
     def tier(self) -> int | None:  # override
         tier = super().tier
         if tier is None:
@@ -882,21 +924,6 @@ class Unit(RequiredUpgradeMixin, ActionsMixin, TraitsMixin, ModifiersMixin, Refe
     def upkeep(self) -> dict[str, float]:
         return self._get_cost(upkeep=True)
 
-    @property
-    def all_effects(self) -> list[Effect]:  # override
-        weapon_effects = [e for w in self.weapons for e in w.all_effects]
-        action_effects = [e for a in self.actions for e in a.all_effects]
-        trait_effects = [e for t in self.traits for e in t.all_effects]
-        return [*super().all_effects, *weapon_effects, *action_effects, *trait_effects]
-
-    @lru_cache()
-    def _get_key_property(self, name: str, convert_to: Type = None) -> ParamValue | None:
-        for effect in [e for e in self.mod_effects if len(e.params) == 1]:
-            if effect.name == name:
-                param = effect.params[0]
-                return param.value if convert_to is None else convert_to(param.value)
-        return None
-
     @lru_cache()
     def _get_cost(self, upkeep=False) -> dict[str, float]:
         suffix = "Upkeep" if upkeep else "Cost"
@@ -908,14 +935,15 @@ class Unit(RequiredUpgradeMixin, ActionsMixin, TraitsMixin, ModifiersMixin, Refe
         cost["total"] = sum(cost.values())
         return cost
 
+    # TODO: re-check param types (in weapons there are variations within same property)
     # key properties
     @property
     def armor(self) -> int | None:
-        return self._get_key_property("armor", int)
+        return self.get_key_property("armor", int)
 
     @property
     def hitpoints(self) -> int | None:
-        return self._get_key_property("hitpointsMax", int)
+        return self.get_key_property("hitpointsMax", int)
 
     @property
     def total_hitpoints(self) -> int | None:
@@ -923,7 +951,31 @@ class Unit(RequiredUpgradeMixin, ActionsMixin, TraitsMixin, ModifiersMixin, Refe
 
     @property
     def morale(self) -> int:
-        return self._get_key_property("moraleMax", int)
+        return self.get_key_property("moraleMax", int)
+
+    @property
+    def movement(self) -> int:
+        return self.get_key_property("movementMax", int)
+
+    @property
+    def strength_damage(self) -> float | None:
+        return self.get_key_property("strengthDamage", float)
+
+    @property
+    def melee_attacks(self) -> int | None:
+        return self.get_key_property("meleeAttacks", int)
+
+    @property
+    def melee_accuracy(self) -> int | None:
+        return self.get_key_property("meleeAccuracy", int)
+
+    @property
+    def ranged_accuracy(self) -> int | None:
+        return self.get_key_property("rangedAccuracy", int)
+
+    @property
+    def cargo_slots(self) -> int | None:
+        return self.get_key_property("cargoSlots", int)
 
     # weapons
     @property
